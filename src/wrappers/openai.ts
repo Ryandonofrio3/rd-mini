@@ -3,7 +3,7 @@
  * Wraps OpenAI client to auto-capture chat completions AND the new Responses API
  */
 
-import type { TraceData, RaindropRequestOptions, WithTraceId } from '../types.js';
+import type { TraceData, RaindropRequestOptions, WithTraceId, InteractionContext, SpanData } from '../types.js';
 
 // Client types - flexible to handle both APIs
 type OpenAIClient = {
@@ -93,6 +93,7 @@ export interface OpenAIWrapperContext {
   generateTraceId: () => string;
   sendTrace: (trace: TraceData) => void;
   getUserId: () => string | undefined;
+  getInteractionContext: () => InteractionContext | undefined;
   debug: boolean;
 }
 
@@ -172,43 +173,85 @@ function wrapChatCompletions(
         arguments: JSON.parse(tc.function.arguments),
       }));
 
-      context.sendTrace({
-        traceId,
-        provider: 'openai',
-        model: params.model,
-        input: params.messages,
-        output,
-        startTime,
-        endTime,
-        latencyMs: endTime - startTime,
-        tokens: response.usage ? {
-          input: response.usage.prompt_tokens,
-          output: response.usage.completion_tokens,
-          total: response.usage.total_tokens,
-        } : undefined,
-        toolCalls,
-        userId,
-        conversationId: options?.raindrop?.conversationId,
-        properties: options?.raindrop?.properties,
-      });
+      // Check if we're within an interaction
+      const interaction = context.getInteractionContext();
+
+      if (interaction) {
+        // Add as span to the interaction
+        const span: SpanData = {
+          spanId: traceId,
+          parentId: interaction.interactionId,
+          name: `openai:${params.model}`,
+          type: 'ai',
+          startTime,
+          endTime,
+          latencyMs: endTime - startTime,
+          input: params.messages,
+          output,
+          properties: {
+            ...options?.raindrop?.properties,
+            input_tokens: response.usage?.prompt_tokens,
+            output_tokens: response.usage?.completion_tokens,
+            tool_calls: toolCalls,
+          },
+        };
+        interaction.spans.push(span);
+      } else {
+        // Standalone - send as trace
+        context.sendTrace({
+          traceId,
+          provider: 'openai',
+          model: params.model,
+          input: params.messages,
+          output,
+          startTime,
+          endTime,
+          latencyMs: endTime - startTime,
+          tokens: response.usage ? {
+            input: response.usage.prompt_tokens,
+            output: response.usage.completion_tokens,
+            total: response.usage.total_tokens,
+          } : undefined,
+          toolCalls,
+          userId,
+          conversationId: options?.raindrop?.conversationId,
+          properties: options?.raindrop?.properties,
+        });
+      }
 
       return Object.assign(response, { _traceId: traceId });
     } catch (error) {
       const endTime = Date.now();
+      const interaction = context.getInteractionContext();
 
-      context.sendTrace({
-        traceId,
-        provider: 'openai',
-        model: params.model,
-        input: params.messages,
-        startTime,
-        endTime,
-        latencyMs: endTime - startTime,
-        userId,
-        conversationId: options?.raindrop?.conversationId,
-        properties: options?.raindrop?.properties,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (interaction) {
+        const span: SpanData = {
+          spanId: traceId,
+          parentId: interaction.interactionId,
+          name: `openai:${params.model}`,
+          type: 'ai',
+          startTime,
+          endTime,
+          latencyMs: endTime - startTime,
+          input: params.messages,
+          error: error instanceof Error ? error.message : String(error),
+        };
+        interaction.spans.push(span);
+      } else {
+        context.sendTrace({
+          traceId,
+          provider: 'openai',
+          model: params.model,
+          input: params.messages,
+          startTime,
+          endTime,
+          latencyMs: endTime - startTime,
+          userId,
+          conversationId: options?.raindrop?.conversationId,
+          properties: options?.raindrop?.properties,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
 
       throw error;
     }
@@ -317,6 +360,7 @@ function wrapChatStream(
     context: OpenAIWrapperContext;
   }
 ): WithTraceId<AsyncIterable<StreamChunk>> {
+  const interaction = options.context.getInteractionContext();
   const collectedContent: string[] = [];
   const collectedToolCalls: Map<number, { id?: string; name: string; arguments: string }> = new Map();
 
