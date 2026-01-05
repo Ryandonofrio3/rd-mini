@@ -26,4 +26,6 @@ export type {
   FeedbackOptions,
   RaindropRequestOptions,
   WithTraceId,
+  InteractionOptions,
+  WrapToolOptions,
 } from './types.js';

@@ -85,6 +85,7 @@ export class Raindrop {
       generateTraceId: () => this.generateTraceId(),
       sendTrace: (trace: TraceData) => this.sendTrace(trace),
       getUserId: () => this.currentUserId,
+      getInteractionContext: () => this.getInteractionContext(),
       debug: this.config.debug,
     };
 

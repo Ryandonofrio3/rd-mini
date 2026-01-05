@@ -3,7 +3,7 @@
  * Wraps AI SDK model providers to auto-capture all calls
  */
 
-import type { TraceData, RaindropRequestOptions } from '../types.js';
+import type { TraceData, RaindropRequestOptions, InteractionContext, SpanData } from '../types.js';
 
 // Vercel AI SDK model type (simplified)
 type LanguageModel = {
@@ -18,6 +18,7 @@ export interface AISDKWrapperContext {
   generateTraceId: () => string;
   sendTrace: (trace: TraceData) => void;
   getUserId: () => string | undefined;
+  getInteractionContext: () => InteractionContext | undefined;
   debug: boolean;
 }
 
@@ -58,48 +59,89 @@ export function wrapAISDKModel<T extends LanguageModel>(
             const usage = result.usage as { promptTokens?: number; completionTokens?: number } | undefined;
             const toolCalls = result.toolCalls as Array<{ toolName: string; args: unknown }> | undefined;
 
-            context.sendTrace({
-              traceId,
-              provider: 'ai-sdk',
-              model: target.modelId,
-              input: options.prompt || options.messages,
-              output: text,
-              startTime,
-              endTime,
-              latencyMs: endTime - startTime,
-              tokens: usage ? {
-                input: usage.promptTokens,
-                output: usage.completionTokens,
-                total: (usage.promptTokens || 0) + (usage.completionTokens || 0),
-              } : undefined,
-              toolCalls: toolCalls?.map(tc => ({
-                id: '',
-                name: tc.toolName,
-                arguments: tc.args,
-              })),
-              userId,
-              conversationId: defaultOptions?.conversationId,
-              properties: defaultOptions?.properties,
-            });
+            // Check if we're within an interaction
+            const interaction = context.getInteractionContext();
+
+            if (interaction) {
+              // Add as span to the interaction
+              const span: SpanData = {
+                spanId: traceId,
+                parentId: interaction.interactionId,
+                name: `ai-sdk:${target.modelId}`,
+                type: 'ai',
+                startTime,
+                endTime,
+                latencyMs: endTime - startTime,
+                input: options.prompt || options.messages,
+                output: text,
+                properties: {
+                  ...defaultOptions?.properties,
+                  input_tokens: usage?.promptTokens,
+                  output_tokens: usage?.completionTokens,
+                  tool_calls: toolCalls?.map(tc => ({ name: tc.toolName, arguments: tc.args })),
+                },
+              };
+              interaction.spans.push(span);
+            } else {
+              context.sendTrace({
+                traceId,
+                provider: 'ai-sdk',
+                model: target.modelId,
+                input: options.prompt || options.messages,
+                output: text,
+                startTime,
+                endTime,
+                latencyMs: endTime - startTime,
+                tokens: usage ? {
+                  input: usage.promptTokens,
+                  output: usage.completionTokens,
+                  total: (usage.promptTokens || 0) + (usage.completionTokens || 0),
+                } : undefined,
+                toolCalls: toolCalls?.map(tc => ({
+                  id: '',
+                  name: tc.toolName,
+                  arguments: tc.args,
+                })),
+                userId,
+                conversationId: defaultOptions?.conversationId,
+                properties: defaultOptions?.properties,
+              });
+            }
 
             // Attach traceId to result
             return Object.assign(result, { _traceId: traceId });
           } catch (error) {
             const endTime = Date.now();
+            const interaction = context.getInteractionContext();
 
-            context.sendTrace({
-              traceId,
-              provider: 'ai-sdk',
-              model: target.modelId,
-              input: options.prompt || options.messages,
-              startTime,
-              endTime,
-              latencyMs: endTime - startTime,
-              userId,
-              conversationId: defaultOptions?.conversationId,
-              properties: defaultOptions?.properties,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            if (interaction) {
+              const span: SpanData = {
+                spanId: traceId,
+                parentId: interaction.interactionId,
+                name: `ai-sdk:${target.modelId}`,
+                type: 'ai',
+                startTime,
+                endTime,
+                latencyMs: endTime - startTime,
+                input: options.prompt || options.messages,
+                error: error instanceof Error ? error.message : String(error),
+              };
+              interaction.spans.push(span);
+            } else {
+              context.sendTrace({
+                traceId,
+                provider: 'ai-sdk',
+                model: target.modelId,
+                input: options.prompt || options.messages,
+                startTime,
+                endTime,
+                latencyMs: endTime - startTime,
+                userId,
+                conversationId: defaultOptions?.conversationId,
+                properties: defaultOptions?.properties,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
 
             throw error;
           }
@@ -112,6 +154,7 @@ export function wrapAISDKModel<T extends LanguageModel>(
           const traceId = (defaultOptions?.traceId) || context.generateTraceId();
           const startTime = Date.now();
           const userId = defaultOptions?.userId || context.getUserId();
+          const interaction = context.getInteractionContext();
 
           if (context.debug) {
             console.log('[raindrop] AI SDK stream started:', traceId);
@@ -165,41 +208,78 @@ export function wrapAISDKModel<T extends LanguageModel>(
                   const endTime = Date.now();
                   const output = collectedText.join('');
 
-                  context.sendTrace({
-                    traceId,
-                    provider: 'ai-sdk',
-                    model: target.modelId,
-                    input: options.prompt || options.messages,
-                    output,
-                    startTime,
-                    endTime,
-                    latencyMs: endTime - startTime,
-                    tokens: {
-                      input: usage.promptTokens,
-                      output: usage.completionTokens,
-                      total: usage.promptTokens + usage.completionTokens,
-                    },
-                    toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
-                    userId,
-                    conversationId: defaultOptions?.conversationId,
-                    properties: defaultOptions?.properties,
-                  });
+                  if (interaction) {
+                    // Add as span to the interaction
+                    const span: SpanData = {
+                      spanId: traceId,
+                      parentId: interaction.interactionId,
+                      name: `ai-sdk:${target.modelId}`,
+                      type: 'ai',
+                      startTime,
+                      endTime,
+                      latencyMs: endTime - startTime,
+                      input: options.prompt || options.messages,
+                      output,
+                      properties: {
+                        ...defaultOptions?.properties,
+                        input_tokens: usage.promptTokens,
+                        output_tokens: usage.completionTokens,
+                        tool_calls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
+                      },
+                    };
+                    interaction.spans.push(span);
+                  } else {
+                    context.sendTrace({
+                      traceId,
+                      provider: 'ai-sdk',
+                      model: target.modelId,
+                      input: options.prompt || options.messages,
+                      output,
+                      startTime,
+                      endTime,
+                      latencyMs: endTime - startTime,
+                      tokens: {
+                        input: usage.promptTokens,
+                        output: usage.completionTokens,
+                        total: usage.promptTokens + usage.completionTokens,
+                      },
+                      toolCalls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
+                      userId,
+                      conversationId: defaultOptions?.conversationId,
+                      properties: defaultOptions?.properties,
+                    });
+                  }
                 } catch (error) {
                   const endTime = Date.now();
 
-                  context.sendTrace({
-                    traceId,
-                    provider: 'ai-sdk',
-                    model: target.modelId,
-                    input: options.prompt || options.messages,
-                    startTime,
-                    endTime,
-                    latencyMs: endTime - startTime,
-                    userId,
-                    conversationId: defaultOptions?.conversationId,
-                    properties: defaultOptions?.properties,
-                    error: error instanceof Error ? error.message : String(error),
-                  });
+                  if (interaction) {
+                    const span: SpanData = {
+                      spanId: traceId,
+                      parentId: interaction.interactionId,
+                      name: `ai-sdk:${target.modelId}`,
+                      type: 'ai',
+                      startTime,
+                      endTime,
+                      latencyMs: endTime - startTime,
+                      input: options.prompt || options.messages,
+                      error: error instanceof Error ? error.message : String(error),
+                    };
+                    interaction.spans.push(span);
+                  } else {
+                    context.sendTrace({
+                      traceId,
+                      provider: 'ai-sdk',
+                      model: target.modelId,
+                      input: options.prompt || options.messages,
+                      startTime,
+                      endTime,
+                      latencyMs: endTime - startTime,
+                      userId,
+                      conversationId: defaultOptions?.conversationId,
+                      properties: defaultOptions?.properties,
+                      error: error instanceof Error ? error.message : String(error),
+                    });
+                  }
 
                   throw error;
                 }
@@ -213,19 +293,34 @@ export function wrapAISDKModel<T extends LanguageModel>(
           } catch (error) {
             const endTime = Date.now();
 
-            context.sendTrace({
-              traceId,
-              provider: 'ai-sdk',
-              model: target.modelId,
-              input: options.prompt || options.messages,
-              startTime,
-              endTime,
-              latencyMs: endTime - startTime,
-              userId,
-              conversationId: defaultOptions?.conversationId,
-              properties: defaultOptions?.properties,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            if (interaction) {
+              const span: SpanData = {
+                spanId: traceId,
+                parentId: interaction.interactionId,
+                name: `ai-sdk:${target.modelId}`,
+                type: 'ai',
+                startTime,
+                endTime,
+                latencyMs: endTime - startTime,
+                input: options.prompt || options.messages,
+                error: error instanceof Error ? error.message : String(error),
+              };
+              interaction.spans.push(span);
+            } else {
+              context.sendTrace({
+                traceId,
+                provider: 'ai-sdk',
+                model: target.modelId,
+                input: options.prompt || options.messages,
+                startTime,
+                endTime,
+                latencyMs: endTime - startTime,
+                userId,
+                conversationId: defaultOptions?.conversationId,
+                properties: defaultOptions?.properties,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
 
             throw error;
           }

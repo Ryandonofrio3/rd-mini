@@ -3,7 +3,7 @@
  * Wraps Anthropic client to auto-capture all message creations
  */
 
-import type { TraceData, RaindropRequestOptions, WithTraceId } from '../types.js';
+import type { TraceData, RaindropRequestOptions, WithTraceId, InteractionContext, SpanData } from '../types.js';
 
 type AnthropicClient = {
   messages: {
@@ -60,6 +60,7 @@ export interface AnthropicWrapperContext {
   generateTraceId: () => string;
   sendTrace: (trace: TraceData) => void;
   getUserId: () => string | undefined;
+  getInteractionContext: () => InteractionContext | undefined;
   debug: boolean;
 }
 
@@ -116,44 +117,85 @@ export function wrapAnthropic<T extends AnthropicClient>(
         arguments: c.input,
       }));
 
-      // Send trace
-      context.sendTrace({
-        traceId,
-        provider: 'anthropic',
-        model: params.model,
-        input: params.messages,
-        output,
-        startTime,
-        endTime,
-        latencyMs: endTime - startTime,
-        tokens: {
-          input: response.usage.input_tokens,
-          output: response.usage.output_tokens,
-          total: response.usage.input_tokens + response.usage.output_tokens,
-        },
-        toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-        userId,
-        conversationId: options?.raindrop?.conversationId,
-        properties: options?.raindrop?.properties,
-      });
+      // Check if we're within an interaction
+      const interaction = context.getInteractionContext();
+
+      if (interaction) {
+        // Add as span to the interaction
+        const span: SpanData = {
+          spanId: traceId,
+          parentId: interaction.interactionId,
+          name: `anthropic:${params.model}`,
+          type: 'ai',
+          startTime,
+          endTime,
+          latencyMs: endTime - startTime,
+          input: params.messages,
+          output,
+          properties: {
+            ...options?.raindrop?.properties,
+            input_tokens: response.usage.input_tokens,
+            output_tokens: response.usage.output_tokens,
+            tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+          },
+        };
+        interaction.spans.push(span);
+      } else {
+        // Send trace
+        context.sendTrace({
+          traceId,
+          provider: 'anthropic',
+          model: params.model,
+          input: params.messages,
+          output,
+          startTime,
+          endTime,
+          latencyMs: endTime - startTime,
+          tokens: {
+            input: response.usage.input_tokens,
+            output: response.usage.output_tokens,
+            total: response.usage.input_tokens + response.usage.output_tokens,
+          },
+          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+          userId,
+          conversationId: options?.raindrop?.conversationId,
+          properties: options?.raindrop?.properties,
+        });
+      }
 
       return Object.assign(response, { _traceId: traceId });
     } catch (error) {
       const endTime = Date.now();
+      const interaction = context.getInteractionContext();
 
-      context.sendTrace({
-        traceId,
-        provider: 'anthropic',
-        model: params.model,
-        input: params.messages,
-        startTime,
-        endTime,
-        latencyMs: endTime - startTime,
-        userId,
-        conversationId: options?.raindrop?.conversationId,
-        properties: options?.raindrop?.properties,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      if (interaction) {
+        const span: SpanData = {
+          spanId: traceId,
+          parentId: interaction.interactionId,
+          name: `anthropic:${params.model}`,
+          type: 'ai',
+          startTime,
+          endTime,
+          latencyMs: endTime - startTime,
+          input: params.messages,
+          error: error instanceof Error ? error.message : String(error),
+        };
+        interaction.spans.push(span);
+      } else {
+        context.sendTrace({
+          traceId,
+          provider: 'anthropic',
+          model: params.model,
+          input: params.messages,
+          startTime,
+          endTime,
+          latencyMs: endTime - startTime,
+          userId,
+          conversationId: options?.raindrop?.conversationId,
+          properties: options?.raindrop?.properties,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
 
       throw error;
     }
@@ -185,6 +227,7 @@ function wrapStream(
     context: AnthropicWrapperContext;
   }
 ): WithTraceId<AsyncIterable<StreamEvent>> {
+  const interaction = options.context.getInteractionContext();
   const collectedText: string[] = [];
   const toolCalls: Array<{ id: string; name: string; arguments: unknown }> = [];
   let usage = { input_tokens: 0, output_tokens: 0 };
@@ -222,41 +265,78 @@ function wrapStream(
         const endTime = Date.now();
         const output = collectedText.join('');
 
-        options.context.sendTrace({
-          traceId: options.traceId,
-          provider: 'anthropic',
-          model: options.model,
-          input: options.input,
-          output,
-          startTime: options.startTime,
-          endTime,
-          latencyMs: endTime - options.startTime,
-          tokens: {
-            input: usage.input_tokens,
-            output: usage.output_tokens,
-            total: usage.input_tokens + usage.output_tokens,
-          },
-          toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-          userId: options.userId,
-          conversationId: options.conversationId,
-          properties: options.properties,
-        });
+        if (interaction) {
+          // Add as span to the interaction
+          const span: SpanData = {
+            spanId: options.traceId,
+            parentId: interaction.interactionId,
+            name: `anthropic:${options.model}`,
+            type: 'ai',
+            startTime: options.startTime,
+            endTime,
+            latencyMs: endTime - options.startTime,
+            input: options.input,
+            output,
+            properties: {
+              ...options.properties,
+              input_tokens: usage.input_tokens,
+              output_tokens: usage.output_tokens,
+              tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+            },
+          };
+          interaction.spans.push(span);
+        } else {
+          options.context.sendTrace({
+            traceId: options.traceId,
+            provider: 'anthropic',
+            model: options.model,
+            input: options.input,
+            output,
+            startTime: options.startTime,
+            endTime,
+            latencyMs: endTime - options.startTime,
+            tokens: {
+              input: usage.input_tokens,
+              output: usage.output_tokens,
+              total: usage.input_tokens + usage.output_tokens,
+            },
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            userId: options.userId,
+            conversationId: options.conversationId,
+            properties: options.properties,
+          });
+        }
       } catch (error) {
         const endTime = Date.now();
 
-        options.context.sendTrace({
-          traceId: options.traceId,
-          provider: 'anthropic',
-          model: options.model,
-          input: options.input,
-          startTime: options.startTime,
-          endTime,
-          latencyMs: endTime - options.startTime,
-          userId: options.userId,
-          conversationId: options.conversationId,
-          properties: options.properties,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        if (interaction) {
+          const span: SpanData = {
+            spanId: options.traceId,
+            parentId: interaction.interactionId,
+            name: `anthropic:${options.model}`,
+            type: 'ai',
+            startTime: options.startTime,
+            endTime,
+            latencyMs: endTime - options.startTime,
+            input: options.input,
+            error: error instanceof Error ? error.message : String(error),
+          };
+          interaction.spans.push(span);
+        } else {
+          options.context.sendTrace({
+            traceId: options.traceId,
+            provider: 'anthropic',
+            model: options.model,
+            input: options.input,
+            startTime: options.startTime,
+            endTime,
+            latencyMs: endTime - options.startTime,
+            userId: options.userId,
+            conversationId: options.conversationId,
+            properties: options.properties,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
         throw error;
       }

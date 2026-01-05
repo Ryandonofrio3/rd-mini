@@ -389,41 +389,77 @@ function wrapChatStream(
 
         const endTime = Date.now();
         const output = collectedContent.join('');
+        const toolCalls = Array.from(collectedToolCalls.values()).map(tc => ({
+          id: tc.id || '',
+          name: tc.name,
+          arguments: tc.arguments ? JSON.parse(tc.arguments) : {},
+        }));
 
-        options.context.sendTrace({
-          traceId: options.traceId,
-          provider: 'openai',
-          model: options.model,
-          input: options.input,
-          output,
-          startTime: options.startTime,
-          endTime,
-          latencyMs: endTime - options.startTime,
-          toolCalls: Array.from(collectedToolCalls.values()).map(tc => ({
-            id: tc.id || '',
-            name: tc.name,
-            arguments: tc.arguments ? JSON.parse(tc.arguments) : {},
-          })),
-          userId: options.userId,
-          conversationId: options.conversationId,
-          properties: options.properties,
-        });
+        if (interaction) {
+          // Add as span to the interaction
+          const span: SpanData = {
+            spanId: options.traceId,
+            parentId: interaction.interactionId,
+            name: `openai:${options.model}`,
+            type: 'ai',
+            startTime: options.startTime,
+            endTime,
+            latencyMs: endTime - options.startTime,
+            input: options.input,
+            output,
+            properties: {
+              ...options.properties,
+              tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
+            },
+          };
+          interaction.spans.push(span);
+        } else {
+          options.context.sendTrace({
+            traceId: options.traceId,
+            provider: 'openai',
+            model: options.model,
+            input: options.input,
+            output,
+            startTime: options.startTime,
+            endTime,
+            latencyMs: endTime - options.startTime,
+            toolCalls,
+            userId: options.userId,
+            conversationId: options.conversationId,
+            properties: options.properties,
+          });
+        }
       } catch (error) {
         const endTime = Date.now();
 
-        options.context.sendTrace({
-          traceId: options.traceId,
-          provider: 'openai',
-          model: options.model,
-          input: options.input,
-          startTime: options.startTime,
-          endTime,
-          latencyMs: endTime - options.startTime,
-          userId: options.userId,
-          conversationId: options.conversationId,
-          properties: options.properties,
-          error: error instanceof Error ? error.message : String(error),
-        });
+        if (interaction) {
+          const span: SpanData = {
+            spanId: options.traceId,
+            parentId: interaction.interactionId,
+            name: `openai:${options.model}`,
+            type: 'ai',
+            startTime: options.startTime,
+            endTime,
+            latencyMs: endTime - options.startTime,
+            input: options.input,
+            error: error instanceof Error ? error.message : String(error),
+          };
+          interaction.spans.push(span);
+        } else {
+          options.context.sendTrace({
+            traceId: options.traceId,
+            provider: 'openai',
+            model: options.model,
+            input: options.input,
+            startTime: options.startTime,
+            endTime,
+            latencyMs: endTime - options.startTime,
+            userId: options.userId,
+            conversationId: options.conversationId,
+            properties: options.properties,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
         throw error;
       }
