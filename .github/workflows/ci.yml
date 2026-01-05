@@ -42,21 +42,3 @@ jobs:
       - name: Run tests
         run: cd python && uv run pytest tests/ -v
 
-  test-browser:
-    name: Test Browser SDK
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      - name: Install dependencies
-        run: cd browser && bun install
-
-      - name: Build
-        run: cd browser && bun run build
-
-      - name: Run tests
-        run: cd browser && bun test

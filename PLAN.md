@@ -286,13 +286,107 @@ bun run build
 
 ---
 
+## Feature Completeness Analysis
+
+Compared to the old `raindrop-ai` SDK:
+
+| Feature | Old SDK | New SDK | Status |
+|---------|---------|---------|--------|
+| Track AI calls | `trackAi()` | `wrap()` auto-traces | ✅ Better |
+| Streaming | Manual `trackAiPartial` | Auto on stream end | ✅ Better |
+| Multi-step pipelines | `@interaction` decorator | `withInteraction()` | ✅ Same |
+| Begin/finish pattern | `begin()`/`finish()` | `begin()`/`finish()` | ✅ Same |
+| Resume interaction | `resume_interaction()` | `resumeInteraction()` | ✅ Same |
+| Tool tracing | `@tool`, `withTool()` | `wrapTool()` | ✅ Same |
+| User identification | `identify()` | `identify()` | ✅ Same |
+| Feedback/signals | `track_signal()` | `feedback()` | ✅ Same |
+| Attachments | ✅ | ✅ | ✅ Same |
+| Conversation threading | `convo_id` | `conversationId` | ✅ Same |
+| Debug mode | `debugLogs` | `debug` | ✅ Same |
+| Disable tracking | `disabled` | `disabled` | ✅ Same |
+| PII redaction | `redactPii` | ❌ | N/A (no source access) |
+
+**Provider support:**
+- Old SDK's `instrumentModules` (Cohere, Bedrock, Pinecone, etc.) was just OTEL pass-through, not real support
+- New SDK has **better** OpenAI/Anthropic/Vercel AI SDK support with custom wrappers
+
+---
+
 ## Next Steps
 
-Priority order:
+### Phase 1: Feature Complete (Core) - ~1 hour
+
+Small gaps to close for full parity:
+
+- [ ] **Add `withTool()` inline pattern** (~30 lines, 30 min)
+  - File: `ts/src/index.ts`
+  - Add method to Interaction class for inline anonymous tool tracing
+  ```typescript
+  const result = await interaction.withTool(
+    { name: 'search' },
+    async () => searchDB(query)
+  );
+  ```
+
+- [ ] **Add `version` param to tool tracing** (~10 lines, 10 min)
+  - File: `ts/src/types.ts`, `ts/src/index.ts`
+  - Add `version?: number` to `WrapToolOptions`
+
+- [ ] **Expose queue configuration** (~20 lines, 20 min)
+  - File: `ts/src/types.ts`, `ts/src/transport.ts`
+  - Add to RaindropConfig: `flushInterval`, `maxQueueSize`, `maxRetries`
+
+- [ ] **Add `flush()` method** (~5 lines, 5 min)
+  - File: `ts/src/index.ts`
+  - Expose transport.flush() for manual flushing
+
+### Phase 2: Documentation - ~3 hours
+
+- [ ] **Cloudflare Workers guide** (1-2 hours)
+  - File: `docs/integrations/cloudflare.mdx`
+  - Cover: setup, streaming with waitUntil(), env vars
+
+- [ ] **Error handling docs** (30 min)
+  - File: `docs/sdk/typescript/error-handling.mdx`
+  - Cover: retry behavior, fire-and-forget semantics, debug mode
+
+- [ ] **Migration guide from v1** (1 hour)
+  - File: `docs/migration.mdx`
+  - Before/after for: trackAi→wrap, initTracing→gone, withSpan→wrapTool
+
+### Phase 3: Publishing & Verification
 
 1. ~~**Python SDK**~~ ✅ Complete
-2. ~~**Repo restructure**~~ ✅ Complete (ts/, python/, browser/, integrations/)
+2. ~~**Repo restructure**~~ ✅ Complete
 3. **Dashboard verification** - Make sure data looks right
-4. **Documentation** - Mintlify setup + core pages
+4. **Documentation** - Mintlify core pages
 5. **Publish** - npm + PyPI
-6. **Additional providers** - Cohere, Bedrock, etc.
+
+### Phase 4: Future Expansion (User-Driven)
+
+**Only pursue if users request:**
+
+| Provider | Why | Effort |
+|----------|-----|--------|
+| AWS Bedrock | Enterprise customers | ~400 lines |
+| Google Vertex AI | Enterprise customers | ~400 lines |
+| Pinecone | RAG visibility | ~200 lines |
+| Qdrant | RAG visibility | ~200 lines |
+
+**Not recommended (too complex):**
+- LangChain/LlamaIndex - Many abstractions, high maintenance burden
+- The old SDK's `instrumentModules` just passed these to OTEL, it wasn't real support
+
+---
+
+## Summary
+
+**To be feature complete (excluding PII redaction):**
+```
+Phase 1 (Code):   ~1 hour
+Phase 2 (Docs):   ~3 hours
+                  --------
+Total:            ~4 hours
+```
+
+After Phase 1 + 2, the SDK is **feature complete** relative to the old SDK's actual documented capabilities. The `wrap()` pattern is simpler and more maintainable than the OTEL approach.

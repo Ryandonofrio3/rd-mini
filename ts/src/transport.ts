@@ -3,13 +3,24 @@
  * Fire-and-forget with buffering and retry
  */
 
-import type { TraceData, FeedbackOptions, UserTraits, SpanData, Attachment } from './types.js';
+import type { TraceData, FeedbackOptions, UserTraits } from './core/types.js';
+import {
+  formatTrace,
+  formatInteraction,
+  formatFeedback,
+  formatIdentify,
+  type InteractionPayload,
+} from './core/format.js';
+import { delay, DEFAULT_CONFIG } from './core/utils.js';
 
-interface TransportConfig {
+export interface TransportConfig {
   apiKey: string;
   baseUrl: string;
   debug: boolean;
   disabled: boolean;
+  flushInterval?: number;
+  maxQueueSize?: number;
+  maxRetries?: number;
 }
 
 interface QueuedEvent {
@@ -18,32 +29,19 @@ interface QueuedEvent {
   timestamp: number;
 }
 
-interface InteractionData {
-  interactionId: string;
-  userId?: string;
-  event: string;
-  input?: string;
-  output?: string;
-  startTime: number;
-  endTime: number;
-  latencyMs: number;
-  conversationId?: string;
-  properties?: Record<string, unknown>;
-  attachments?: Attachment[];
-  error?: string;
-  spans: SpanData[];
-}
-
 export class Transport {
   private config: TransportConfig;
   private queue: QueuedEvent[] = [];
   private flushTimeout: ReturnType<typeof setTimeout> | null = null;
-  private readonly FLUSH_INTERVAL = 1000; // 1 second
-  private readonly MAX_QUEUE_SIZE = 100;
-  private readonly MAX_RETRIES = 3;
+  private readonly flushInterval: number;
+  private readonly maxQueueSize: number;
+  private readonly maxRetries: number;
 
   constructor(config: TransportConfig) {
     this.config = config;
+    this.flushInterval = config.flushInterval ?? DEFAULT_CONFIG.flushInterval;
+    this.maxQueueSize = config.maxQueueSize ?? DEFAULT_CONFIG.maxQueueSize;
+    this.maxRetries = config.maxRetries ?? DEFAULT_CONFIG.maxRetries;
   }
 
   /**
@@ -54,7 +52,7 @@ export class Transport {
 
     this.enqueue({
       type: 'trace',
-      data: this.formatTrace(trace),
+      data: formatTrace(trace),
       timestamp: Date.now(),
     });
   }
@@ -67,21 +65,7 @@ export class Transport {
 
     this.enqueue({
       type: 'feedback',
-      data: {
-        event_id: traceId,
-        signal_name: feedback.type || (feedback.score !== undefined && feedback.score >= 0.5 ? 'positive' : 'negative'),
-        sentiment: feedback.score !== undefined
-          ? (feedback.score >= 0.5 ? 'POSITIVE' : 'NEGATIVE')
-          : (feedback.type === 'thumbs_up' ? 'POSITIVE' : 'NEGATIVE'),
-        signal_type: feedback.signalType || 'default',
-        timestamp: feedback.timestamp || new Date().toISOString(),
-        ...(feedback.attachmentId && { attachment_id: feedback.attachmentId }),
-        properties: {
-          score: feedback.score,
-          comment: feedback.comment,
-          ...feedback.properties,
-        },
-      },
+      data: formatFeedback(traceId, feedback),
       timestamp: Date.now(),
     });
   }
@@ -94,10 +78,7 @@ export class Transport {
 
     this.enqueue({
       type: 'identify',
-      data: {
-        user_id: userId,
-        traits,
-      },
+      data: formatIdentify(userId, traits),
       timestamp: Date.now(),
     });
   }
@@ -105,102 +86,14 @@ export class Transport {
   /**
    * Send an interaction with nested spans
    */
-  sendInteraction(interaction: InteractionData): void {
+  sendInteraction(interaction: InteractionPayload): void {
     if (this.config.disabled) return;
 
     this.enqueue({
       type: 'interaction',
-      data: this.formatInteraction(interaction),
+      data: formatInteraction(interaction),
       timestamp: Date.now(),
     });
-  }
-
-  /**
-   * Format interaction data for API
-   */
-  private formatInteraction(interaction: InteractionData): Record<string, unknown> {
-    // Convert spans to attachments for now (until we have proper nested trace support)
-    const spanAttachments = interaction.spans.map(span => ({
-      type: 'code',
-      name: `${span.type}:${span.name}`,
-      value: JSON.stringify({
-        spanId: span.spanId,
-        input: span.input,
-        output: span.output,
-        latencyMs: span.latencyMs,
-        error: span.error,
-        properties: span.properties,
-      }),
-      role: 'output',
-      language: 'json',
-    }));
-
-    // Combine user attachments with span attachments
-    const allAttachments = [
-      ...(interaction.attachments || []),
-      ...spanAttachments,
-    ];
-
-    return {
-      event_id: interaction.interactionId,
-      user_id: interaction.userId,
-      event: interaction.event,
-      timestamp: new Date(interaction.startTime).toISOString(),
-      properties: {
-        latency_ms: interaction.latencyMs,
-        span_count: interaction.spans.length,
-        ...(interaction.error && { error: interaction.error }),
-        ...interaction.properties,
-      },
-      ai_data: {
-        input: interaction.input,
-        output: interaction.output,
-        convo_id: interaction.conversationId,
-      },
-      ...(allAttachments.length > 0 && { attachments: allAttachments }),
-    };
-  }
-
-  /**
-   * Format trace data for API
-   */
-  private formatTrace(trace: TraceData): Record<string, unknown> {
-    return {
-      event_id: trace.traceId,
-      user_id: trace.userId,
-      event: 'ai_interaction',
-      timestamp: new Date(trace.startTime).toISOString(),
-      properties: {
-        provider: trace.provider,
-        conversation_id: trace.conversationId,
-        latency_ms: trace.latencyMs,
-        // Token usage
-        ...(trace.tokens && {
-          input_tokens: trace.tokens.input,
-          output_tokens: trace.tokens.output,
-          total_tokens: trace.tokens.total,
-        }),
-        // Error info
-        ...(trace.error && { error: trace.error }),
-        ...trace.properties,
-      },
-      ai_data: {
-        model: trace.model,
-        input: typeof trace.input === 'string' ? trace.input : JSON.stringify(trace.input),
-        output: trace.output ? (typeof trace.output === 'string' ? trace.output : JSON.stringify(trace.output)) : undefined,
-        convo_id: trace.conversationId,
-      },
-      // Include tool calls if present
-      ...(trace.toolCalls && trace.toolCalls.length > 0 && {
-        attachments: trace.toolCalls.map(tc => ({
-          type: 'code',
-          name: `tool:${tc.name}`,
-          value: JSON.stringify({ arguments: tc.arguments, result: tc.result }),
-          role: 'output',
-          language: 'json',
-        })),
-      }),
-    };
   }
 
   /**
@@ -214,14 +107,14 @@ export class Transport {
     }
 
     // Flush if queue is full
-    if (this.queue.length >= this.MAX_QUEUE_SIZE) {
+    if (this.queue.length >= this.maxQueueSize) {
       this.flush();
       return;
     }
 
     // Schedule flush
     if (!this.flushTimeout) {
-      this.flushTimeout = setTimeout(() => this.flush(), this.FLUSH_INTERVAL);
+      this.flushTimeout = setTimeout(() => this.flush(), this.flushInterval);
     }
   }
 
@@ -278,11 +171,11 @@ export class Transport {
         body: JSON.stringify(data),
       });
 
-      if (!response.ok && retries < this.MAX_RETRIES) {
+      if (!response.ok && retries < this.maxRetries) {
         if (this.config.debug) {
           console.warn(`[raindrop] Request failed (${response.status}), retrying...`);
         }
-        await this.delay(Math.pow(2, retries) * 100);
+        await delay(Math.pow(2, retries) * 100);
         return this.sendBatch(endpoint, data, retries + 1);
       }
 
@@ -290,8 +183,8 @@ export class Transport {
         console.log(`[raindrop] Sent ${data.length} events to ${endpoint}`);
       }
     } catch (error) {
-      if (retries < this.MAX_RETRIES) {
-        await this.delay(Math.pow(2, retries) * 100);
+      if (retries < this.maxRetries) {
+        await delay(Math.pow(2, retries) * 100);
         return this.sendBatch(endpoint, data, retries + 1);
       }
       if (this.config.debug) {
@@ -315,23 +208,19 @@ export class Transport {
         body: JSON.stringify(data),
       });
 
-      if (!response.ok && retries < this.MAX_RETRIES) {
-        await this.delay(Math.pow(2, retries) * 100);
+      if (!response.ok && retries < this.maxRetries) {
+        await delay(Math.pow(2, retries) * 100);
         return this.sendSingle(endpoint, data, retries + 1);
       }
     } catch (error) {
-      if (retries < this.MAX_RETRIES) {
-        await this.delay(Math.pow(2, retries) * 100);
+      if (retries < this.maxRetries) {
+        await delay(Math.pow(2, retries) * 100);
         return this.sendSingle(endpoint, data, retries + 1);
       }
       if (this.config.debug) {
         console.warn('[raindrop] Failed to send event:', error);
       }
     }
-  }
-
-  private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**

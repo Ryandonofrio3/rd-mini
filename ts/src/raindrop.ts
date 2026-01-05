@@ -24,17 +24,17 @@ import type {
   InteractionOptions,
   InteractionContext,
   WrapToolOptions,
+  WithToolOptions,
   SpanData,
   BeginOptions,
   FinishOptions,
   Attachment,
-} from './types.js';
+} from './core/types.js';
+import { generateId, DEFAULT_CONFIG } from './core/utils.js';
 import { Transport } from './transport.js';
 import { wrapOpenAI } from './wrappers/openai.js';
 import { wrapAnthropic } from './wrappers/anthropic.js';
 import { wrapAISDKModel } from './wrappers/ai-sdk.js';
-
-const DEFAULT_BASE_URL = 'https://api.raindrop.ai';
 
 // Global context storage for interaction tracking
 const interactionStorage = new AsyncLocalStorage<InteractionContext>();
@@ -130,6 +130,56 @@ export class Interaction {
     // Send the interaction
     this.raindrop._finishInteraction(this.context);
   }
+
+  /**
+   * Execute a tool inline and trace it
+   *
+   * @example
+   * const result = await interaction.withTool(
+   *   { name: 'search_docs' },
+   *   async () => await vectorDb.search(query)
+   * );
+   */
+  async withTool<T>(
+    options: WithToolOptions,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const spanId = generateId('span');
+    const startTime = Date.now();
+
+    const span: SpanData = {
+      spanId,
+      parentId: this.context.interactionId,
+      name: options.name,
+      type: 'tool',
+      version: options.version,
+      startTime,
+      properties: options.properties,
+    };
+
+    try {
+      const result = await fn();
+      const endTime = Date.now();
+
+      span.endTime = endTime;
+      span.latencyMs = endTime - startTime;
+      span.output = result;
+
+      this.context.spans.push(span);
+
+      return result;
+    } catch (error) {
+      const endTime = Date.now();
+
+      span.endTime = endTime;
+      span.latencyMs = endTime - startTime;
+      span.error = error instanceof Error ? error.message : String(error);
+
+      this.context.spans.push(span);
+
+      throw error;
+    }
+  }
 }
 
 export class Raindrop {
@@ -143,9 +193,12 @@ export class Raindrop {
   constructor(config: RaindropConfig) {
     this.config = {
       apiKey: config.apiKey,
-      baseUrl: config.baseUrl || DEFAULT_BASE_URL,
-      debug: config.debug || false,
-      disabled: config.disabled || false,
+      baseUrl: config.baseUrl ?? DEFAULT_CONFIG.baseUrl,
+      debug: config.debug ?? DEFAULT_CONFIG.debug,
+      disabled: config.disabled ?? DEFAULT_CONFIG.disabled,
+      flushInterval: config.flushInterval ?? DEFAULT_CONFIG.flushInterval,
+      maxQueueSize: config.maxQueueSize ?? DEFAULT_CONFIG.maxQueueSize,
+      maxRetries: config.maxRetries ?? DEFAULT_CONFIG.maxRetries,
     };
 
     this.transport = new Transport({
@@ -153,6 +206,9 @@ export class Raindrop {
       baseUrl: this.config.baseUrl,
       debug: this.config.debug,
       disabled: this.config.disabled,
+      flushInterval: this.config.flushInterval,
+      maxQueueSize: this.config.maxQueueSize,
+      maxRetries: this.config.maxRetries,
     });
 
     if (this.config.debug) {
@@ -358,6 +414,17 @@ export class Raindrop {
   }
 
   /**
+   * Flush all pending events (without closing)
+   */
+  async flush(): Promise<void> {
+    await this.transport.flush();
+
+    if (this.config.debug) {
+      console.log('[raindrop] Flushed');
+    }
+  }
+
+  /**
    * Flush all pending events and close
    */
   async close(): Promise<void> {
@@ -458,7 +525,7 @@ export class Raindrop {
 
     return async function(...args: TArgs): Promise<TResult> {
       const context = interactionStorage.getStore();
-      const spanId = self.generateTraceId();
+      const spanId = generateId('span');
       const startTime = Date.now();
 
       if (self.config.debug) {
@@ -470,6 +537,7 @@ export class Raindrop {
         parentId: context?.interactionId,
         name,
         type: 'tool',
+        version: options?.version,
         startTime,
         input: args.length === 1 ? args[0] : args,
         properties: options?.properties,
@@ -575,12 +643,7 @@ export class Raindrop {
    * Internal: Generate a unique trace ID
    */
   private generateTraceId(): string {
-    // Use crypto.randomUUID if available, otherwise fallback
-    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
-      return `trace_${crypto.randomUUID()}`;
-    }
-    // Fallback for environments without crypto.randomUUID
-    return `trace_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
+    return generateId('trace');
   }
 
   /**

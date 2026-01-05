@@ -1,9 +1,9 @@
 /**
- * Raindrop - Zero-config AI Observability SDK
+ * Raindrop SDK - Zero-config AI Observability SDK
  *
  * @example
  * ```typescript
- * import { Raindrop } from 'raindrop';
+ * import { Raindrop } from 'rd-mini';
  * import OpenAI from 'openai';
  *
  * const raindrop = new Raindrop({ apiKey: process.env.RAINDROP_API_KEY });
@@ -29,7 +29,11 @@ export type {
   InteractionOptions,
   InteractionContext,
   WrapToolOptions,
+  WithToolOptions,
   BeginOptions,
   FinishOptions,
   Attachment,
-} from './types.js';
+  SpanData,
+  TraceData,
+  SignalOptions,
+} from './core/types.js';
