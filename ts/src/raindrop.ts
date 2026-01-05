@@ -30,6 +30,9 @@ import type {
   BeginOptions,
   FinishOptions,
   Attachment,
+  SpanParams,
+  Tracer,
+  AiTrackEvent,
 } from './core/types.js';
 import { generateId, DEFAULT_CONFIG } from './core/utils.js';
 import { Transport } from './transport.js';
@@ -169,6 +172,62 @@ export class Interaction {
       this.context.spans.push(span);
 
       return result;
+    } catch (error) {
+      const endTime = Date.now();
+
+      span.endTime = endTime;
+      span.latencyMs = endTime - startTime;
+      span.error = error instanceof Error ? error.message : String(error);
+
+      this.context.spans.push(span);
+
+      throw error;
+    }
+  }
+
+  /**
+   * Execute a function within a traced span (raindrop-ai compatibility)
+   *
+   * Similar to withTool but uses SpanParams for more configuration options.
+   *
+   * @example
+   * const result = await interaction.withSpan(
+   *   { name: 'process_data', properties: { step: 'validation' } },
+   *   async () => await processData(input)
+   * );
+   */
+  async withSpan<T>(
+    params: SpanParams | string,
+    fn: (...args: unknown[]) => Promise<T> | T,
+    thisArg?: unknown,
+    ...args: unknown[]
+  ): Promise<T> {
+    const spanId = generateId('span');
+    const startTime = Date.now();
+    const spanName = typeof params === 'string' ? params : params.name;
+    const spanProperties = typeof params === 'string' ? {} : params.properties;
+
+    const span: SpanData = {
+      spanId,
+      parentId: this.context.interactionId,
+      name: spanName,
+      type: 'tool',
+      startTime,
+      properties: spanProperties,
+      input: typeof params === 'string' ? undefined : params.inputParameters,
+    };
+
+    try {
+      const result = await (thisArg ? fn.apply(thisArg, args) : fn(...args));
+      const endTime = Date.now();
+
+      span.endTime = endTime;
+      span.latencyMs = endTime - startTime;
+      span.output = result;
+
+      this.context.spans.push(span);
+
+      return result as T;
     } catch (error) {
       const endTime = Date.now();
 
@@ -466,6 +525,161 @@ export class Raindrop {
     if (this.config.debug) {
       console.log('[raindrop] Closed');
     }
+  }
+
+  // ============================================
+  // raindrop-ai compatibility methods
+  // ============================================
+
+  /**
+   * Track AI events directly (raindrop-ai compatibility)
+   *
+   * In addition to normal event properties, you can provide an "input", "output", or "model" parameter.
+   * You must specify at least one of input or output.
+   *
+   * @example
+   * raindrop.trackAi({
+   *   event: "chat",
+   *   model: "gpt-4o",
+   *   input: "what's up?",
+   *   output: "not much human, how are you?",
+   *   userId: "user123",
+   * });
+   */
+  trackAi(event: AiTrackEvent | AiTrackEvent[]): string | string[] | undefined {
+    if (this.config.disabled) {
+      return undefined;
+    }
+
+    const trackSingle = (e: AiTrackEvent): string => {
+      const eventId = e.eventId || generateId('evt');
+
+      this.transport.sendTrace({
+        traceId: eventId,
+        provider: 'unknown',
+        model: e.model || 'unknown',
+        input: e.input,
+        output: e.output,
+        startTime: e.timestamp ? new Date(e.timestamp).getTime() : Date.now(),
+        userId: e.userId || this.currentUserId,
+        conversationId: e.convoId,
+        properties: {
+          event: e.event,
+          ...e.properties,
+        },
+      });
+
+      if (this.config.debug) {
+        console.log('[raindrop] AI event tracked:', eventId);
+      }
+
+      return eventId;
+    };
+
+    if (Array.isArray(event)) {
+      return event.map(trackSingle);
+    } else {
+      return trackSingle(event);
+    }
+  }
+
+  /**
+   * Set user details (raindrop-ai compatibility alias for identify)
+   *
+   * @example
+   * raindrop.setUserDetails({
+   *   userId: 'user123',
+   *   traits: { name: 'John', plan: 'pro' }
+   * });
+   */
+  setUserDetails(event: { userId: string; traits?: UserTraits }): void {
+    this.identify(event.userId, event.traits);
+  }
+
+  /**
+   * Returns a tracer object for batch jobs (raindrop-ai compatibility)
+   *
+   * This is meant for batch jobs or other non-interactive use-cases
+   * where you only care about tracing and token usage.
+   *
+   * @example
+   * const tracer = raindrop.tracer({ batch_id: 'batch123' });
+   * await tracer.withSpan({ name: 'process_item' }, async () => {
+   *   // process an item
+   * });
+   */
+  tracer(globalProperties?: Record<string, string>): Tracer {
+    const self = this;
+
+    return {
+      async withSpan<T>(
+        params: SpanParams | string,
+        fn: (...args: unknown[]) => Promise<T> | T,
+        thisArg?: unknown,
+        ...args: unknown[]
+      ): Promise<T> {
+        const spanId = generateId('span');
+        const startTime = Date.now();
+        const spanName = typeof params === 'string' ? params : params.name;
+        const spanProperties = typeof params === 'string' ? {} : params.properties;
+
+        const span: SpanData = {
+          spanId,
+          name: spanName,
+          type: 'tool',
+          startTime,
+          properties: {
+            ...globalProperties,
+            ...spanProperties,
+          },
+          input: typeof params === 'string' ? undefined : params.inputParameters,
+        };
+
+        try {
+          const result = await (thisArg ? fn.apply(thisArg, args) : fn(...args));
+          const endTime = Date.now();
+
+          span.endTime = endTime;
+          span.latencyMs = endTime - startTime;
+          span.output = result;
+
+          // Send as standalone trace
+          self.transport.sendTrace({
+            traceId: spanId,
+            provider: 'unknown',
+            model: `span:${spanName}`,
+            input: span.input,
+            output: span.output,
+            startTime: span.startTime,
+            endTime: span.endTime,
+            latencyMs: span.latencyMs,
+            properties: span.properties,
+          });
+
+          return result as T;
+        } catch (error) {
+          const endTime = Date.now();
+
+          span.endTime = endTime;
+          span.latencyMs = endTime - startTime;
+          span.error = error instanceof Error ? error.message : String(error);
+
+          self.transport.sendTrace({
+            traceId: spanId,
+            provider: 'unknown',
+            model: `span:${spanName}`,
+            input: span.input,
+            startTime: span.startTime,
+            endTime: span.endTime,
+            latencyMs: span.latencyMs,
+            error: span.error,
+            properties: span.properties,
+          });
+
+          throw error;
+        }
+      },
+    };
   }
 
   /**

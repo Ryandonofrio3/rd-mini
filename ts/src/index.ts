@@ -36,4 +36,8 @@ export type {
   SpanData,
   TraceData,
   SignalOptions,
+  // raindrop-ai compatibility types
+  SpanParams,
+  Tracer,
+  AiTrackEvent,
 } from './core/types.js';

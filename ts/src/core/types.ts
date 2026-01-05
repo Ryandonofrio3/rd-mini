@@ -263,3 +263,61 @@ export interface IdentifyOptions {
   userId: string;
   traits?: UserTraits;
 }
+
+// ============================================
+// Span Parameters (for withSpan - raindrop-ai compatibility)
+// ============================================
+
+export interface SpanParams {
+  /** Name of the span for identification in traces */
+  name: string;
+  /** Additional properties for the span */
+  properties?: Record<string, unknown>;
+  /** Input parameters to record */
+  inputParameters?: unknown[];
+  /** Whether to trace content (default: true) */
+  traceContent?: boolean;
+  /** Whether to suppress tracing for this span */
+  suppressTracing?: boolean;
+}
+
+// ============================================
+// Tracer Interface (for batch jobs - raindrop-ai compatibility)
+// ============================================
+
+export interface Tracer {
+  /** Execute a function within a traced span */
+  withSpan<T>(
+    params: SpanParams | string,
+    fn: (...args: unknown[]) => Promise<T> | T,
+    thisArg?: unknown,
+    ...args: unknown[]
+  ): Promise<T>;
+}
+
+// ============================================
+// AI Track Event (raindrop-ai compatibility)
+// ============================================
+
+export interface AiTrackEvent {
+  /** Event name (required) */
+  event: string;
+  /** User ID (required) */
+  userId: string;
+  /** Custom event ID */
+  eventId?: string;
+  /** AI model used */
+  model?: string;
+  /** Input text (required if output not provided) */
+  input?: string;
+  /** Output text (required if input not provided) */
+  output?: string;
+  /** Conversation ID */
+  convoId?: string;
+  /** Additional properties */
+  properties?: Record<string, unknown>;
+  /** Attachments */
+  attachments?: Attachment[];
+  /** Timestamp */
+  timestamp?: string;
+}
