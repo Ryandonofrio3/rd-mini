@@ -1,34 +1,56 @@
 {
-  "name": "raindrop-mini",
+  "name": "raindrop",
   "version": "0.1.0",
-  "private": true,
+  "description": "Zero-config AI observability SDK",
+  "module": "dist/index.js",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "eslint"
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "example": "bun run examples/basic.ts",
+    "test:real": "bun run examples/real-test.ts"
   },
-  "dependencies": {
-    "next": "16.1.1",
-    "react": "19.2.3",
-    "react-dom": "19.2.3"
-  },
-  "devDependencies": {
-    "@tailwindcss/postcss": "^4",
-    "@types/node": "^20",
-    "@types/react": "^19",
-    "@types/react-dom": "^19",
-    "eslint": "^9",
-    "eslint-config-next": "16.1.1",
-    "tailwindcss": "^4",
-    "typescript": "^5"
-  },
-  "ignoreScripts": [
-    "sharp",
-    "unrs-resolver"
+  "files": [
+    "dist",
+    "README.md"
   ],
-  "trustedDependencies": [
-    "sharp",
-    "unrs-resolver"
-  ]
+  "keywords": [
+    "ai",
+    "observability",
+    "tracing",
+    "openai",
+    "anthropic",
+    "llm"
+  ],
+  "devDependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "@types/bun": "latest",
+    "@types/node": "^20.0.0",
+    "openai": "^4.0.0",
+    "typescript": "^5.0.0"
+  },
+  "peerDependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
+    "ai": "^3.0.0 || ^4.0.0",
+    "openai": "^4.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "ai": {
+      "optional": true
+    },
+    "openai": {
+      "optional": true
+    }
+  }
 }
