@@ -3,7 +3,7 @@
  * Fire-and-forget with buffering and retry
  */
 
-import type { TraceData, FeedbackOptions, UserTraits, SpanData } from './types.js';
+import type { TraceData, FeedbackOptions, UserTraits, SpanData, Attachment } from './types.js';
 
 interface TransportConfig {
   apiKey: string;
@@ -29,6 +29,7 @@ interface InteractionData {
   latencyMs: number;
   conversationId?: string;
   properties?: Record<string, unknown>;
+  attachments?: Attachment[];
   error?: string;
   spans: SpanData[];
 }
@@ -134,6 +135,12 @@ export class Transport {
       language: 'json',
     }));
 
+    // Combine user attachments with span attachments
+    const allAttachments = [
+      ...(interaction.attachments || []),
+      ...spanAttachments,
+    ];
+
     return {
       event_id: interaction.interactionId,
       user_id: interaction.userId,
@@ -150,7 +157,7 @@ export class Transport {
         output: interaction.output,
         convo_id: interaction.conversationId,
       },
-      attachments: spanAttachments,
+      ...(allAttachments.length > 0 && { attachments: allAttachments }),
     };
   }
 

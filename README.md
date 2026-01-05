@@ -180,6 +180,131 @@ const response2 = await openai.chat.completions.create(
 );
 ```
 
+## Multi-Step Interactions
+
+For complex pipelines (RAG, agents, etc.), group multiple AI calls into a single interaction:
+
+### Context Manager (Simple)
+
+```typescript
+const result = await raindrop.withInteraction(
+  {
+    userId: 'user_123',
+    event: 'rag_query',
+    input: 'What is the capital of France?',
+    conversationId: 'conv_123',
+  },
+  async (ctx) => {
+    // All wrapped clients auto-link to this interaction
+    const docs = await searchDocs(query);
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o',
+      messages: [{ role: 'user', content: `Docs: ${docs}\n\nQ: ${query}` }],
+    });
+
+    // Set the final output
+    ctx.output = response.choices[0].message.content;
+    return response;
+  }
+);
+```
+
+### Begin/Finish (Flexible)
+
+When you need more control (webhooks, streaming, cross-function):
+
+```typescript
+// Start the interaction
+const interaction = raindrop.begin({
+  eventId: 'evt_123',           // Optional custom ID
+  event: 'chat_message',
+  userId: 'user_123',
+  input: 'What is love?',
+  model: 'gpt-4o',
+  conversationId: 'conv_123',
+});
+
+console.log(interaction.id);  // Access the event ID
+
+// Do your work...
+const response = await openai.chat.completions.create({ ... });
+
+// Update properties as you go
+interaction.setProperty('stage', 'completed');
+interaction.setProperties({ tokens: 150, cached: true });
+interaction.addAttachments([
+  { type: 'text', name: 'context', value: 'retrieved docs...', role: 'input' }
+]);
+
+// Finish when done
+interaction.output = response.choices[0].message.content;
+interaction.finish();
+```
+
+### Resume an Interaction
+
+If you need to finish an interaction elsewhere (e.g., in a webhook handler):
+
+```typescript
+// In your initial handler
+const interaction = raindrop.begin({ event: 'async_job', userId: 'user_123' });
+await saveToDatabase({ eventId: interaction.id, ... });
+
+// Later, in a webhook or different function
+const interaction = raindrop.resumeInteraction('evt_123');
+interaction.output = 'Final result from webhook';
+interaction.finish();
+```
+
+## Tool Tracing
+
+Trace custom tool/function calls within interactions:
+
+### Decorator Style
+
+```typescript
+// Define a traced tool
+const searchDocs = raindrop.wrapTool(
+  'search_docs',
+  async (query: string) => {
+    return await vectorDB.search(query);
+  }
+);
+
+// Use within an interaction - auto-linked as a span
+await raindrop.withInteraction({ event: 'rag' }, async () => {
+  const docs = await searchDocs('capital of France');
+  // docs call appears as a span in the interaction
+});
+```
+
+### Python Style
+
+```python
+@raindrop.tool("search_docs")
+def search_docs(query: str) -> list:
+    return vector_db.search(query)
+
+# Use normally - auto-traced
+with raindrop.interaction(event="rag_query") as ctx:
+    docs = search_docs("capital of France")
+    response = openai.chat.completions.create(...)
+    ctx.output = response.choices[0].message.content
+```
+
+## Attachments
+
+Include additional context with your events:
+
+```typescript
+interaction.addAttachments([
+  { type: 'code', name: 'example.ts', value: 'console.log("hi")', role: 'input', language: 'typescript' },
+  { type: 'text', name: 'context', value: 'Retrieved document...', role: 'input' },
+  { type: 'image', value: 'https://example.com/img.png', role: 'output' },
+  { type: 'iframe', name: 'Generated UI', value: 'https://app.example.com', role: 'output' },
+]);
+```
+
 ## What Gets Captured
 
 Every traced call automatically captures:
@@ -250,6 +375,22 @@ Set the current user for all subsequent calls.
 
 Send feedback for a specific trace.
 
+### `raindrop.withInteraction(options, fn)`
+
+Execute a function within an interaction context. All traced calls inside are auto-linked.
+
+### `raindrop.begin(options): Interaction`
+
+Start a new interaction with manual control. Returns an `Interaction` handle.
+
+### `raindrop.resumeInteraction(eventId): Interaction`
+
+Resume an existing interaction by ID.
+
+### `raindrop.wrapTool(name, fn, options?)`
+
+Wrap a function as a traced tool.
+
 ### `raindrop.getLastTraceId()`
 
 Get the most recent trace ID (backup if you can't access `_traceId`).
@@ -257,6 +398,18 @@ Get the most recent trace ID (backup if you can't access `_traceId`).
 ### `raindrop.close()`
 
 Flush all pending events and close the transport.
+
+### `Interaction` Object
+
+```typescript
+interaction.id                // Get the event ID
+interaction.output            // Get/set the output
+interaction.setProperty(k, v) // Set a single property
+interaction.setProperties({}) // Set multiple properties
+interaction.addAttachments([])// Add attachments
+interaction.setInput(text)    // Set the input
+interaction.finish(options?)  // Finish and send the interaction
+```
 
 ---
 

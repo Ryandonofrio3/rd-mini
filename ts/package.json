@@ -1,5 +1,5 @@
 {
-  "name": "raindrop",
+  "name": "rd-mini",
   "version": "0.1.0",
   "description": "Zero-config AI observability SDK",
   "module": "dist/index.js",
@@ -15,8 +15,11 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "example": "bun run examples/basic.ts",
-    "test:real": "bun run examples/real-test.ts"
+    "test": "bun test tests/unit",
+    "test:unit": "bun test tests/unit",
+    "test:integration": "bun test tests/integration",
+    "test:all": "bun test tests/",
+    "example": "bun run examples/basic.ts"
   },
   "files": [
     "dist",

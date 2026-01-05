@@ -121,9 +121,57 @@ export interface InteractionContext {
   conversationId?: string;
   startTime: number;
   input?: string;
+  output?: string;
+  model?: string;
   event?: string;
   properties?: Record<string, unknown>;
+  attachments?: Attachment[];
   spans: SpanData[];
+}
+
+/**
+ * Attachment types for events
+ */
+export interface Attachment {
+  type: 'code' | 'text' | 'image' | 'iframe';
+  name?: string;
+  value: string;
+  role: 'input' | 'output';
+  language?: string;
+}
+
+/**
+ * Options for begin() method
+ */
+export interface BeginOptions {
+  /** Custom event ID (generated if not provided) */
+  eventId?: string;
+  /** User ID for this interaction */
+  userId?: string;
+  /** Event name (e.g., "rag_query", "chat_message") */
+  event?: string;
+  /** Input to the interaction (user's query) */
+  input?: string;
+  /** AI model being used */
+  model?: string;
+  /** Conversation ID for threading */
+  conversationId?: string;
+  /** Additional properties */
+  properties?: Record<string, unknown>;
+  /** Initial attachments */
+  attachments?: Attachment[];
+}
+
+/**
+ * Options for finish() method
+ */
+export interface FinishOptions {
+  /** The final output of the interaction */
+  output?: string;
+  /** Additional properties to merge */
+  properties?: Record<string, unknown>;
+  /** Additional attachments to add */
+  attachments?: Attachment[];
 }
 
 /**

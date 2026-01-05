@@ -25,6 +25,9 @@ import type {
   InteractionContext,
   WrapToolOptions,
   SpanData,
+  BeginOptions,
+  FinishOptions,
+  Attachment,
 } from './types.js';
 import { Transport } from './transport.js';
 import { wrapOpenAI } from './wrappers/openai.js';
@@ -36,12 +39,106 @@ const DEFAULT_BASE_URL = 'https://api.raindrop.ai';
 // Global context storage for interaction tracking
 const interactionStorage = new AsyncLocalStorage<InteractionContext>();
 
+/**
+ * Interaction object returned by begin()
+ * Allows manual control over interaction lifecycle
+ */
+export class Interaction {
+  private context: InteractionContext;
+  private raindrop: Raindrop;
+  private finished = false;
+
+  constructor(context: InteractionContext, raindrop: Raindrop) {
+    this.context = context;
+    this.raindrop = raindrop;
+  }
+
+  /** Get the interaction/event ID */
+  get id(): string {
+    return this.context.interactionId;
+  }
+
+  /** Get or set the output */
+  get output(): string | undefined {
+    return this.context.output;
+  }
+
+  set output(value: string | undefined) {
+    this.context.output = value;
+  }
+
+  /** Set a single property */
+  setProperty(key: string, value: unknown): this {
+    if (!this.context.properties) {
+      this.context.properties = {};
+    }
+    this.context.properties[key] = value;
+    return this;
+  }
+
+  /** Merge multiple properties */
+  setProperties(props: Record<string, unknown>): this {
+    this.context.properties = {
+      ...this.context.properties,
+      ...props,
+    };
+    return this;
+  }
+
+  /** Add attachments */
+  addAttachments(attachments: Attachment[]): this {
+    if (!this.context.attachments) {
+      this.context.attachments = [];
+    }
+    this.context.attachments.push(...attachments);
+    return this;
+  }
+
+  /** Set the input */
+  setInput(input: string): this {
+    this.context.input = input;
+    return this;
+  }
+
+  /** Get the underlying context (for internal use) */
+  getContext(): InteractionContext {
+    return this.context;
+  }
+
+  /**
+   * Finish the interaction and send to Raindrop
+   */
+  finish(options?: FinishOptions): void {
+    if (this.finished) {
+      console.warn('[raindrop] Interaction already finished:', this.id);
+      return;
+    }
+
+    this.finished = true;
+
+    // Merge any final options
+    if (options?.output) {
+      this.context.output = options.output;
+    }
+    if (options?.properties) {
+      this.setProperties(options.properties);
+    }
+    if (options?.attachments) {
+      this.addAttachments(options.attachments);
+    }
+
+    // Send the interaction
+    this.raindrop._finishInteraction(this.context);
+  }
+}
+
 export class Raindrop {
   private config: Required<RaindropConfig>;
   private transport: Transport;
   private currentUserId?: string;
   private _currentUserTraits?: UserTraits; // Stored for future use
   private lastTraceId?: string;
+  private activeInteractions = new Map<string, Interaction>();
 
   constructor(config: RaindropConfig) {
     this.config = {
@@ -139,6 +236,114 @@ export class Raindrop {
   }
 
   /**
+   * Start an interaction manually (escape hatch for complex flows)
+   *
+   * For simple cases, use withInteraction() instead.
+   * Use begin() when you need to start and finish in different places.
+   *
+   * @example
+   * const interaction = raindrop.begin({
+   *   userId: 'user123',
+   *   event: 'chat_message',
+   *   input: 'What is X?',
+   * });
+   *
+   * // ... later, maybe in a different function
+   * interaction.finish({ output: 'X is...' });
+   */
+  begin(options: BeginOptions = {}): Interaction {
+    const interactionId = options.eventId || this.generateTraceId();
+    const userId = options.userId || this.currentUserId;
+
+    const context: InteractionContext = {
+      interactionId,
+      userId,
+      conversationId: options.conversationId,
+      startTime: Date.now(),
+      input: options.input,
+      model: options.model,
+      event: options.event || 'interaction',
+      properties: options.properties,
+      attachments: options.attachments,
+      spans: [],
+    };
+
+    const interaction = new Interaction(context, this);
+    this.activeInteractions.set(interactionId, interaction);
+
+    // Also set it in AsyncLocalStorage so wrapped clients can find it
+    interactionStorage.enterWith(context);
+
+    if (this.config.debug) {
+      console.log('[raindrop] Interaction started:', interactionId);
+    }
+
+    return interaction;
+  }
+
+  /**
+   * Resume an existing interaction by ID
+   *
+   * @example
+   * const interaction = raindrop.resumeInteraction(eventId);
+   * interaction.finish({ output: 'Done!' });
+   */
+  resumeInteraction(eventId: string): Interaction {
+    const existing = this.activeInteractions.get(eventId);
+    if (existing) {
+      return existing;
+    }
+
+    // Create a new interaction with the given ID (for cases where
+    // the interaction was started elsewhere or we lost the reference)
+    if (this.config.debug) {
+      console.log('[raindrop] Creating new interaction for resume:', eventId);
+    }
+
+    const context: InteractionContext = {
+      interactionId: eventId,
+      userId: this.currentUserId,
+      startTime: Date.now(),
+      spans: [],
+    };
+
+    const interaction = new Interaction(context, this);
+    this.activeInteractions.set(eventId, interaction);
+    return interaction;
+  }
+
+  /**
+   * Internal: Called by Interaction.finish()
+   * @internal
+   */
+  _finishInteraction(context: InteractionContext): void {
+    const endTime = Date.now();
+    this.lastTraceId = context.interactionId;
+
+    // Remove from active interactions
+    this.activeInteractions.delete(context.interactionId);
+
+    this.transport.sendInteraction({
+      interactionId: context.interactionId,
+      userId: context.userId,
+      event: context.event || 'interaction',
+      input: context.input,
+      output: context.output,
+      startTime: context.startTime,
+      endTime,
+      latencyMs: endTime - context.startTime,
+      conversationId: context.conversationId,
+      properties: context.properties,
+      attachments: context.attachments,
+      spans: context.spans,
+    });
+
+    if (this.config.debug) {
+      console.log('[raindrop] Interaction finished:', context.interactionId);
+    }
+  }
+
+  /**
    * Get the last trace ID (useful if you can't access _traceId on response)
    */
   getLastTraceId(): string | undefined {
@@ -170,16 +375,16 @@ export class Raindrop {
    * @example
    * await raindrop.withInteraction(
    *   { userId: 'user123', event: 'rag_query', input: 'What is X?' },
-   *   async () => {
+   *   async (ctx) => {
    *     const docs = await searchDocs(query);  // Auto-linked
    *     const response = await openai.chat.completions.create(...);  // Auto-linked
-   *     return response.choices[0].message.content;
+   *     ctx.output = response.choices[0].message.content;  // Set output
    *   }
    * );
    */
   async withInteraction<T>(
     options: InteractionOptions,
-    fn: () => Promise<T>
+    fn: (ctx: InteractionContext) => Promise<T>
   ): Promise<T> {
     const interactionId = this.generateTraceId();
     const startTime = Date.now();
@@ -201,13 +406,18 @@ export class Raindrop {
     }
 
     try {
-      // Run the function within the context
-      const result = await interactionStorage.run(context, fn);
+      // Run the function within the context, passing ctx for output/properties
+      const result = await interactionStorage.run(context, () => fn(context));
       const endTime = Date.now();
+
+      // Use context.output if set, otherwise use return value
+      const output = context.output !== undefined
+        ? context.output
+        : (typeof result === 'string' ? result : undefined);
 
       // Send the interaction trace with all spans
       this.sendInteraction(context, {
-        output: typeof result === 'string' ? result : JSON.stringify(result),
+        output,
         endTime,
         latencyMs: endTime - startTime,
       });

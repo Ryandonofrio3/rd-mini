@@ -1,0 +1,38 @@
+{
+  "name": "@raindrop/vercel-ai",
+  "version": "0.1.0",
+  "description": "Raindrop integration for Vercel AI SDK",
+  "type": "module",
+  "main": "dist/index.js",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "keywords": [
+    "raindrop",
+    "ai",
+    "vercel",
+    "ai-sdk",
+    "observability"
+  ],
+  "peerDependencies": {
+    "ai": ">=3.0.0"
+  },
+  "devDependencies": {
+    "ai": "^3.0.0",
+    "typescript": "^5.3.0"
+  },
+  "author": "Raindrop",
+  "license": "MIT"
+}

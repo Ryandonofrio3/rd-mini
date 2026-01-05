@@ -19,7 +19,7 @@
  * ```
  */
 
-export { Raindrop } from './raindrop.js';
+export { Raindrop, Interaction } from './raindrop.js';
 export type {
   RaindropConfig,
   UserTraits,
@@ -27,5 +27,9 @@ export type {
   RaindropRequestOptions,
   WithTraceId,
   InteractionOptions,
+  InteractionContext,
   WrapToolOptions,
+  BeginOptions,
+  FinishOptions,
+  Attachment,
 } from './types.js';

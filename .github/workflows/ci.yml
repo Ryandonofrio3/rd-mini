@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test-typescript:
+    name: Test TypeScript SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: cd ts && bun install
+
+      - name: Build
+        run: cd ts && bun run build
+
+      - name: Run unit tests
+        run: cd ts && bun test tests/unit
+
+  test-python:
+    name: Test Python SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "latest"
+
+      - name: Install dependencies
+        run: cd python && uv sync --dev
+
+      - name: Run tests
+        run: cd python && uv run pytest tests/ -v
+
+  test-browser:
+    name: Test Browser SDK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: cd browser && bun install
+
+      - name: Build
+        run: cd browser && bun run build
+
+      - name: Run tests
+        run: cd browser && bun test
