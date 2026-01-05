@@ -14,6 +14,9 @@ class RaindropConfig:
     base_url: str = "https://api.raindrop.ai"
     debug: bool = False
     disabled: bool = False
+    flush_interval: float = 1.0  # seconds
+    max_queue_size: int = 100
+    max_retries: int = 3
 
 
 @dataclass
@@ -47,6 +50,20 @@ class FeedbackOptions:
     signal_type: Literal["default", "feedback", "edit", "standard"] = "default"
     attachment_id: Optional[str] = None
     timestamp: Optional[str] = None
+    properties: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class SignalOptions:
+    """Options for tracking signals with full control."""
+
+    event_id: str
+    name: str
+    type: Literal["default", "feedback", "edit"] = "default"
+    sentiment: Optional[Literal["POSITIVE", "NEGATIVE"]] = None
+    comment: Optional[str] = None
+    after: Optional[str] = None
+    attachment_id: Optional[str] = None
     properties: dict[str, Any] = field(default_factory=dict)
 
 

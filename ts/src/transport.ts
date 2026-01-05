@@ -3,11 +3,12 @@
  * Fire-and-forget with buffering and retry
  */
 
-import type { TraceData, FeedbackOptions, UserTraits } from './core/types.js';
+import type { TraceData, FeedbackOptions, SignalOptions, UserTraits } from './core/types.js';
 import {
   formatTrace,
   formatInteraction,
   formatFeedback,
+  formatSignal,
   formatIdentify,
   type InteractionPayload,
 } from './core/format.js';
@@ -66,6 +67,19 @@ export class Transport {
     this.enqueue({
       type: 'feedback',
       data: formatFeedback(traceId, feedback),
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * Send a signal with full options
+   */
+  sendSignal(options: SignalOptions): void {
+    if (this.config.disabled) return;
+
+    this.enqueue({
+      type: 'feedback',
+      data: formatSignal(options),
       timestamp: Date.now(),
     });
   }

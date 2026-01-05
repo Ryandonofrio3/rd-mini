@@ -142,12 +142,18 @@ docs/
 
 ```
 raindrop-mini/
-├── ts/                         # TypeScript SDK
+├── ts/                         # TypeScript SDK (includes browser)
 │   ├── src/
-│   │   ├── index.ts
+│   │   ├── index.ts            # Main entry: rd-mini
 │   │   ├── raindrop.ts
 │   │   ├── transport.ts
 │   │   ├── types.ts
+│   │   ├── core/               # Shared code
+│   │   │   ├── types.ts
+│   │   │   ├── utils.ts
+│   │   │   └── format.ts
+│   │   ├── browser/            # Browser entry: rd-mini/browser
+│   │   │   └── index.ts
 │   │   └── wrappers/
 │   │       ├── openai.ts
 │   │       ├── anthropic.ts
@@ -166,20 +172,6 @@ raindrop-mini/
 │   ├── tests/
 │   └── pyproject.toml
 │
-├── browser/                    # Browser SDK (lightweight)
-│   ├── src/index.ts
-│   └── package.json
-│
-├── http/                       # HTTP API docs & examples
-│   └── README.md
-│
-├── integrations/
-│   ├── vercel-ai-sdk/          # Vercel AI SDK integration
-│   │   ├── src/index.ts
-│   │   └── package.json
-│   └── segment/                # Segment integration docs
-│       └── README.md
-│
 └── PLAN.md
 ```
 
@@ -187,12 +179,10 @@ raindrop-mini/
 
 | SDK | Status | Package |
 |-----|--------|---------|
-| TypeScript | ✅ Complete | `raindrop` |
+| TypeScript | ✅ Complete | `rd-mini` |
+| Browser | ✅ Complete | `rd-mini/browser` |
 | Python | ✅ Complete | `raindrop-ai` |
-| Browser | ✅ Structure | `@raindrop/browser` |
-| HTTP API | ✅ Documented | N/A |
-| Vercel AI SDK | ✅ Structure | `@raindrop/vercel-ai` |
-| Segment | ✅ Documented | N/A |
+| Vercel AI SDK | ✅ Built-in | (included in `rd-mini`) |
 
 ---
 
@@ -314,45 +304,39 @@ Compared to the old `raindrop-ai` SDK:
 
 ## Next Steps
 
-### Phase 1: Feature Complete (Core) - ~1 hour
+### Phase 1: Feature Complete (Core) ✅
 
-Small gaps to close for full parity:
+All Phase 1 items completed:
 
-- [ ] **Add `withTool()` inline pattern** (~30 lines, 30 min)
-  - File: `ts/src/index.ts`
-  - Add method to Interaction class for inline anonymous tool tracing
-  ```typescript
-  const result = await interaction.withTool(
-    { name: 'search' },
-    async () => searchDB(query)
-  );
-  ```
+- [x] **`withTool()` inline pattern** - `Interaction.withTool()` in `ts/src/raindrop.ts:143-182`
+- [x] **`version` param to tool tracing** - Added to `WithToolOptions` and `WrapToolOptions`
+- [x] **Queue configuration exposed** - `flushInterval`, `maxQueueSize`, `maxRetries` in `RaindropConfig`
+- [x] **`flush()` method** - `raindrop.flush()` in `ts/src/raindrop.ts:417-425`
 
-- [ ] **Add `version` param to tool tracing** (~10 lines, 10 min)
-  - File: `ts/src/types.ts`, `ts/src/index.ts`
-  - Add `version?: number` to `WrapToolOptions`
+### Repo Consolidation ✅
 
-- [ ] **Expose queue configuration** (~20 lines, 20 min)
-  - File: `ts/src/types.ts`, `ts/src/transport.ts`
-  - Add to RaindropConfig: `flushInterval`, `maxQueueSize`, `maxRetries`
+Consolidated browser and integrations into single `rd-mini` package:
 
-- [ ] **Add `flush()` method** (~5 lines, 5 min)
-  - File: `ts/src/index.ts`
-  - Expose transport.flush() for manual flushing
+- [x] **Shared core module** - `ts/src/core/` with types, utils, formatters
+- [x] **Browser SDK** - `ts/src/browser/index.ts` using shared core
+- [x] **Package exports** - `rd-mini` and `rd-mini/browser` entry points
+- [x] **CI/CD updated** - Removed separate browser jobs
+- [x] **Cleanup** - Removed old `browser/` and `integrations/` folders
 
-### Phase 2: Documentation - ~3 hours
+### Phase 1.5: Minor Gaps ✅
 
-- [ ] **Cloudflare Workers guide** (1-2 hours)
-  - File: `docs/integrations/cloudflare.mdx`
-  - Cover: setup, streaming with waitUntil(), env vars
+Closed small gaps identified in feature review:
 
-- [ ] **Error handling docs** (30 min)
-  - File: `docs/sdk/typescript/error-handling.mdx`
-  - Cover: retry behavior, fire-and-forget semantics, debug mode
+- [x] **`trackSignal()` in TypeScript SDK** - `ts/src/raindrop.ts`
+- [x] **`trackSignal()` in Python SDK** - `python/src/raindrop/client.py`
+- [x] **Queue config in Python SDK** - `flush_interval`, `max_queue_size`, `max_retries`
+- [x] **Deployment patterns doc** - `docs/guides/deployment.mdx`
 
-- [ ] **Migration guide from v1** (1 hour)
-  - File: `docs/migration.mdx`
-  - Before/after for: trackAi→wrap, initTracing→gone, withSpan→wrapTool
+### Phase 2: Documentation
+
+- [x] **Deployment patterns** - `docs/guides/deployment.mdx`
+- [ ] **Error handling docs** - retry behavior, fire-and-forget semantics
+- [ ] **Migration guide from v1** - before/after for common patterns
 
 ### Phase 3: Publishing & Verification
 
@@ -362,31 +346,56 @@ Small gaps to close for full parity:
 4. **Documentation** - Mintlify core pages
 5. **Publish** - npm + PyPI
 
-### Phase 4: Future Expansion (User-Driven)
+### Phase 4: Provider Expansion Strategy
 
-**Only pursue if users request:**
+**Current coverage:**
+- ✅ OpenAI (direct client)
+- ✅ Anthropic (direct client)
+- ✅ Vercel AI SDK (covers OpenAI, Anthropic, Google, Mistral, Cohere via AI SDK providers)
 
-| Provider | Why | Effort |
-|----------|-----|--------|
-| AWS Bedrock | Enterprise customers | ~400 lines |
-| Google Vertex AI | Enterprise customers | ~400 lines |
-| Pinecone | RAG visibility | ~200 lines |
-| Qdrant | RAG visibility | ~200 lines |
+**How to add new providers:**
 
-**Not recommended (too complex):**
-- LangChain/LlamaIndex - Many abstractions, high maintenance burden
-- The old SDK's `instrumentModules` just passed these to OTEL, it wasn't real support
+1. Create wrapper in `ts/src/wrappers/newprovider.ts`
+2. Proxy the main generation method
+3. Extract: model, input, output, tokens, errors
+4. Attach `_traceId` to response
+5. Add detection in `raindrop.ts:detectProvider()`
+6. Add Python equivalent if needed
+
+**Recommended additions (if users request):**
+
+| Provider | Effort | Notes |
+|----------|--------|-------|
+| Google Gemini (direct) | ~300 lines | For users not using AI SDK |
+| AWS Bedrock | ~400 lines | Enterprise, multiple model families |
+| Azure OpenAI | ~100 lines | Mostly reuse OpenAI wrapper |
+| Mistral (direct) | ~250 lines | For users not using AI SDK |
+| Cohere (direct) | ~250 lines | For users not using AI SDK |
+
+**Not recommended:**
+- LangChain/LlamaIndex - Too many abstractions, high maintenance
+- Self-hosted models - Too varied, users can use HTTP API directly
+
+**Key insight:** The Vercel AI SDK already provides unified interface for many providers. Users on AI SDK get Google, Mistral, Cohere, etc. "for free" via our AI SDK wrapper. Direct provider wrappers only needed for users NOT using AI SDK.
 
 ---
 
 ## Summary
 
-**To be feature complete (excluding PII redaction):**
+**Current Status:**
+- ✅ Phase 1 (Code): Complete - all core features implemented
+- ✅ Repo Consolidation: Complete - single `rd-mini` package with browser export
+- ✅ Phase 1.5 (Minor Gaps): Complete - trackSignal, Python queue config, deployment doc
+- ⏳ Phase 2 (Docs): Remaining - error handling, migration guide
+
+**Remaining work:**
 ```
-Phase 1 (Code):   ~1 hour
-Phase 2 (Docs):   ~3 hours
-                  --------
-Total:            ~4 hours
+Phase 2 (Docs):    ~1 hour - error handling docs, migration guide
 ```
 
-After Phase 1 + 2, the SDK is **feature complete** relative to the old SDK's actual documented capabilities. The `wrap()` pattern is simpler and more maintainable than the OTEL approach.
+**Provider coverage:**
+- Direct wrappers: OpenAI, Anthropic
+- Via AI SDK: OpenAI, Anthropic, Google, Mistral, Cohere, and any AI SDK provider
+- Future (if requested): Bedrock, Azure OpenAI, direct Gemini
+
+The SDK is **feature complete** in terms of code. The `wrap()` pattern is simpler and more maintainable than the OTEL approach.

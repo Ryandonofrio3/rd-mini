@@ -24,6 +24,7 @@ from raindrop.types import (
     FinishOptions,
     InteractionContext,
     InteractionOptions,
+    SignalOptions,
     SpanData,
     TraceData,
     UserTraits,
@@ -142,6 +143,9 @@ class Raindrop:
         base_url: str = "https://api.raindrop.ai",
         debug: bool = False,
         disabled: bool = False,
+        flush_interval: float = 1.0,
+        max_queue_size: int = 100,
+        max_retries: int = 3,
     ):
         self._api_key = api_key
         self._base_url = base_url
@@ -156,6 +160,9 @@ class Raindrop:
             base_url=base_url,
             debug=debug,
             disabled=disabled,
+            flush_interval=flush_interval,
+            max_queue_size=max_queue_size,
+            max_retries=max_retries,
         )
 
         self._active_interactions: dict[str, Interaction] = {}
@@ -247,6 +254,51 @@ class Raindrop:
 
         if self._debug:
             print(f"[raindrop] Feedback sent: {trace_id}")
+
+    def track_signal(self, options: SignalOptions | dict[str, Any]) -> None:
+        """
+        Track a signal with full options.
+
+        Use this for custom signal types beyond thumbs up/down.
+        For simple feedback, use feedback() instead.
+
+        Args:
+            options: Signal options (event_id, name, type, sentiment, comment, after, etc.)
+
+        Example:
+            # Edit signal - user corrected the response
+            raindrop.track_signal({
+                "event_id": trace_id,
+                "name": "edit",
+                "type": "edit",
+                "after": "The corrected response text",
+            })
+
+            # Custom signal with sentiment
+            raindrop.track_signal({
+                "event_id": trace_id,
+                "name": "hallucination_detected",
+                "type": "feedback",
+                "sentiment": "NEGATIVE",
+                "comment": "Model made up a fact",
+            })
+        """
+        if isinstance(options, dict):
+            options = SignalOptions(
+                event_id=options["event_id"],
+                name=options["name"],
+                type=options.get("type", "default"),
+                sentiment=options.get("sentiment"),
+                comment=options.get("comment"),
+                after=options.get("after"),
+                attachment_id=options.get("attachment_id"),
+                properties=options.get("properties", {}),
+            )
+
+        self._transport.send_signal(options)
+
+        if self._debug:
+            print(f"[raindrop] Signal tracked: {options.event_id} {options.name}")
 
     def begin(self, options: BeginOptions | dict[str, Any] | None = None, **kwargs: Any) -> Interaction:
         """

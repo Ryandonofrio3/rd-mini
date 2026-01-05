@@ -18,6 +18,7 @@ import type {
   RaindropConfig,
   UserTraits,
   FeedbackOptions,
+  SignalOptions,
   TraceData,
   RaindropRequestOptions,
   ProviderType,
@@ -288,6 +289,38 @@ export class Raindrop {
 
     if (this.config.debug) {
       console.log('[raindrop] Feedback sent:', traceId, options);
+    }
+  }
+
+  /**
+   * Track a signal with full options
+   *
+   * Use this for custom signal types beyond thumbs up/down.
+   * For simple feedback, use feedback() instead.
+   *
+   * @example
+   * // Edit signal - user corrected the response
+   * await raindrop.trackSignal({
+   *   eventId: traceId,
+   *   name: 'edit',
+   *   type: 'edit',
+   *   after: 'The corrected response text',
+   * });
+   *
+   * // Custom signal with sentiment
+   * await raindrop.trackSignal({
+   *   eventId: traceId,
+   *   name: 'hallucination_detected',
+   *   type: 'feedback',
+   *   sentiment: 'NEGATIVE',
+   *   comment: 'Model made up a fact',
+   * });
+   */
+  async trackSignal(options: SignalOptions): Promise<void> {
+    this.transport.sendSignal(options);
+
+    if (this.config.debug) {
+      console.log('[raindrop] Signal tracked:', options.eventId, options.name);
     }
   }
 

@@ -13,7 +13,7 @@ from typing import Any, Literal
 
 import httpx
 
-from raindrop.types import FeedbackOptions, SpanData, TraceData, UserTraits
+from raindrop.types import FeedbackOptions, SignalOptions, SpanData, TraceData, UserTraits
 
 
 @dataclass
@@ -28,21 +28,23 @@ class QueuedEvent:
 class Transport:
     """HTTP transport with batching and retry."""
 
-    FLUSH_INTERVAL = 1.0  # seconds
-    MAX_QUEUE_SIZE = 100
-    MAX_RETRIES = 3
-
     def __init__(
         self,
         api_key: str,
         base_url: str = "https://api.raindrop.ai",
         debug: bool = False,
         disabled: bool = False,
+        flush_interval: float = 1.0,
+        max_queue_size: int = 100,
+        max_retries: int = 3,
     ):
         self.api_key = api_key
         self.base_url = base_url
         self.debug = debug
         self.disabled = disabled
+        self.flush_interval = flush_interval
+        self.max_queue_size = max_queue_size
+        self.max_retries = max_retries
 
         self._queue: list[QueuedEvent] = []
         self._lock = threading.Lock()
@@ -94,6 +96,32 @@ class Transport:
 
         if feedback.attachment_id:
             data["attachment_id"] = feedback.attachment_id
+
+        self._enqueue(QueuedEvent(type="feedback", data=data, timestamp=time.time()))
+
+    def send_signal(self, options: SignalOptions) -> None:
+        """Send a signal with full options."""
+        if self.disabled:
+            return
+
+        props: dict[str, Any] = {}
+        if options.comment:
+            props["comment"] = options.comment
+        if options.after:
+            props["after"] = options.after
+        props.update(options.properties)
+
+        data: dict[str, Any] = {
+            "event_id": options.event_id,
+            "signal_name": options.name,
+            "signal_type": options.type,
+            "sentiment": options.sentiment or "NEGATIVE",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "properties": props,
+        }
+
+        if options.attachment_id:
+            data["attachment_id"] = options.attachment_id
 
         self._enqueue(QueuedEvent(type="feedback", data=data, timestamp=time.time()))
 
@@ -239,13 +267,13 @@ class Transport:
                 print(f"[raindrop] Queued event: {event.type} {event.data}")
 
             # Flush if queue is full
-            if len(self._queue) >= self.MAX_QUEUE_SIZE:
+            if len(self._queue) >= self.max_queue_size:
                 self._flush_now()
                 return
 
             # Schedule flush if not already scheduled
             if self._flush_timer is None and not self._closed:
-                self._flush_timer = threading.Timer(self.FLUSH_INTERVAL, self._flush_now)
+                self._flush_timer = threading.Timer(self.flush_interval, self._flush_now)
                 self._flush_timer.daemon = True
                 self._flush_timer.start()
 
@@ -287,7 +315,7 @@ class Transport:
                 },
             )
 
-            if not response.is_success and retries < self.MAX_RETRIES:
+            if not response.is_success and retries < self.max_retries:
                 if self.debug:
                     print(f"[raindrop] Request failed ({response.status_code}), retrying...")
                 time.sleep(0.1 * (2**retries))
@@ -297,7 +325,7 @@ class Transport:
                 print(f"[raindrop] Sent {len(data)} events to {endpoint}")
 
         except Exception as e:
-            if retries < self.MAX_RETRIES:
+            if retries < self.max_retries:
                 time.sleep(0.1 * (2**retries))
                 return self._send_batch(endpoint, data, retries + 1)
             if self.debug:
@@ -315,12 +343,12 @@ class Transport:
                 },
             )
 
-            if not response.is_success and retries < self.MAX_RETRIES:
+            if not response.is_success and retries < self.max_retries:
                 time.sleep(0.1 * (2**retries))
                 return self._send_single(endpoint, data, retries + 1)
 
         except Exception as e:
-            if retries < self.MAX_RETRIES:
+            if retries < self.max_retries:
                 time.sleep(0.1 * (2**retries))
                 return self._send_single(endpoint, data, retries + 1)
             if self.debug:
