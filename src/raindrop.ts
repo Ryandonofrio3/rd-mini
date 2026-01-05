@@ -163,6 +163,196 @@ export class Raindrop {
   }
 
   /**
+   * Run code within an interaction context
+   * All wrapped clients and tools called within will be auto-linked
+   *
+   * @example
+   * await raindrop.withInteraction(
+   *   { userId: 'user123', event: 'rag_query', input: 'What is X?' },
+   *   async () => {
+   *     const docs = await searchDocs(query);  // Auto-linked
+   *     const response = await openai.chat.completions.create(...);  // Auto-linked
+   *     return response.choices[0].message.content;
+   *   }
+   * );
+   */
+  async withInteraction<T>(
+    options: InteractionOptions,
+    fn: () => Promise<T>
+  ): Promise<T> {
+    const interactionId = this.generateTraceId();
+    const startTime = Date.now();
+    const userId = options.userId || this.currentUserId;
+
+    const context: InteractionContext = {
+      interactionId,
+      userId,
+      conversationId: options.conversationId,
+      startTime,
+      input: options.input,
+      event: options.event || 'interaction',
+      properties: options.properties,
+      spans: [],
+    };
+
+    if (this.config.debug) {
+      console.log('[raindrop] Interaction started:', interactionId);
+    }
+
+    try {
+      // Run the function within the context
+      const result = await interactionStorage.run(context, fn);
+      const endTime = Date.now();
+
+      // Send the interaction trace with all spans
+      this.sendInteraction(context, {
+        output: typeof result === 'string' ? result : JSON.stringify(result),
+        endTime,
+        latencyMs: endTime - startTime,
+      });
+
+      return result;
+    } catch (error) {
+      const endTime = Date.now();
+
+      // Send the interaction trace with error
+      this.sendInteraction(context, {
+        endTime,
+        latencyMs: endTime - startTime,
+        error: error instanceof Error ? error.message : String(error),
+      });
+
+      throw error;
+    }
+  }
+
+  /**
+   * Wrap a tool function for automatic tracing
+   * When called within withInteraction(), the tool will be auto-linked
+   *
+   * @example
+   * const searchDocs = raindrop.wrapTool('search_docs', async (query: string) => {
+   *   return await vectorDb.search(query);
+   * });
+   *
+   * // Use normally
+   * const docs = await searchDocs('how to use raindrop');
+   */
+  wrapTool<TArgs extends unknown[], TResult>(
+    name: string,
+    fn: (...args: TArgs) => Promise<TResult>,
+    options?: WrapToolOptions
+  ): (...args: TArgs) => Promise<TResult> {
+    const self = this;
+
+    return async function(...args: TArgs): Promise<TResult> {
+      const context = interactionStorage.getStore();
+      const spanId = self.generateTraceId();
+      const startTime = Date.now();
+
+      if (self.config.debug) {
+        console.log('[raindrop] Tool started:', name, spanId);
+      }
+
+      const span: SpanData = {
+        spanId,
+        parentId: context?.interactionId,
+        name,
+        type: 'tool',
+        startTime,
+        input: args.length === 1 ? args[0] : args,
+        properties: options?.properties,
+      };
+
+      try {
+        const result = await fn(...args);
+        const endTime = Date.now();
+
+        span.endTime = endTime;
+        span.latencyMs = endTime - startTime;
+        span.output = result;
+
+        // If within an interaction, add to its spans
+        if (context) {
+          context.spans.push(span);
+        } else {
+          // Standalone tool call - send as individual trace
+          self.sendToolTrace(span);
+        }
+
+        return result;
+      } catch (error) {
+        const endTime = Date.now();
+
+        span.endTime = endTime;
+        span.latencyMs = endTime - startTime;
+        span.error = error instanceof Error ? error.message : String(error);
+
+        if (context) {
+          context.spans.push(span);
+        } else {
+          self.sendToolTrace(span);
+        }
+
+        throw error;
+      }
+    };
+  }
+
+  /**
+   * Get the current interaction context (if any)
+   * Useful for wrappers to check if they're within an interaction
+   */
+  getInteractionContext(): InteractionContext | undefined {
+    return interactionStorage.getStore();
+  }
+
+  /**
+   * Internal: Send an interaction with all its spans
+   */
+  private sendInteraction(
+    context: InteractionContext,
+    result: { output?: string; endTime: number; latencyMs: number; error?: string }
+  ): void {
+    this.lastTraceId = context.interactionId;
+
+    this.transport.sendInteraction({
+      interactionId: context.interactionId,
+      userId: context.userId,
+      event: context.event || 'interaction',
+      input: context.input,
+      output: result.output,
+      startTime: context.startTime,
+      endTime: result.endTime,
+      latencyMs: result.latencyMs,
+      conversationId: context.conversationId,
+      properties: context.properties,
+      error: result.error,
+      spans: context.spans,
+    });
+  }
+
+  /**
+   * Internal: Send a standalone tool trace
+   */
+  private sendToolTrace(span: SpanData): void {
+    this.lastTraceId = span.spanId;
+
+    this.transport.sendTrace({
+      traceId: span.spanId,
+      provider: 'unknown',
+      model: `tool:${span.name}`,
+      input: span.input,
+      output: span.output,
+      startTime: span.startTime,
+      endTime: span.endTime,
+      latencyMs: span.latencyMs,
+      error: span.error,
+      properties: span.properties,
+    });
+  }
+
+  /**
    * Internal: Send a trace
    */
   private sendTrace(trace: TraceData): void {

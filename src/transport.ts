@@ -3,7 +3,7 @@
  * Fire-and-forget with buffering and retry
  */
 
-import type { TraceData, FeedbackOptions, UserTraits } from './types.js';
+import type { TraceData, FeedbackOptions, UserTraits, SpanData } from './types.js';
 
 interface TransportConfig {
   apiKey: string;
@@ -13,9 +13,24 @@ interface TransportConfig {
 }
 
 interface QueuedEvent {
-  type: 'trace' | 'feedback' | 'identify';
+  type: 'trace' | 'feedback' | 'identify' | 'interaction';
   data: unknown;
   timestamp: number;
+}
+
+interface InteractionData {
+  interactionId: string;
+  userId?: string;
+  event: string;
+  input?: string;
+  output?: string;
+  startTime: number;
+  endTime: number;
+  latencyMs: number;
+  conversationId?: string;
+  properties?: Record<string, unknown>;
+  error?: string;
+  spans: SpanData[];
 }
 
 export class Transport {
@@ -84,6 +99,59 @@ export class Transport {
       },
       timestamp: Date.now(),
     });
+  }
+
+  /**
+   * Send an interaction with nested spans
+   */
+  sendInteraction(interaction: InteractionData): void {
+    if (this.config.disabled) return;
+
+    this.enqueue({
+      type: 'interaction',
+      data: this.formatInteraction(interaction),
+      timestamp: Date.now(),
+    });
+  }
+
+  /**
+   * Format interaction data for API
+   */
+  private formatInteraction(interaction: InteractionData): Record<string, unknown> {
+    // Convert spans to attachments for now (until we have proper nested trace support)
+    const spanAttachments = interaction.spans.map(span => ({
+      type: 'code',
+      name: `${span.type}:${span.name}`,
+      value: JSON.stringify({
+        spanId: span.spanId,
+        input: span.input,
+        output: span.output,
+        latencyMs: span.latencyMs,
+        error: span.error,
+        properties: span.properties,
+      }),
+      role: 'output',
+      language: 'json',
+    }));
+
+    return {
+      event_id: interaction.interactionId,
+      user_id: interaction.userId,
+      event: interaction.event,
+      timestamp: new Date(interaction.startTime).toISOString(),
+      properties: {
+        latency_ms: interaction.latencyMs,
+        span_count: interaction.spans.length,
+        ...(interaction.error && { error: interaction.error }),
+        ...interaction.properties,
+      },
+      ai_data: {
+        input: interaction.input,
+        output: interaction.output,
+        convo_id: interaction.conversationId,
+      },
+      attachments: spanAttachments,
+    };
   }
 
   /**
@@ -166,14 +234,17 @@ export class Transport {
 
     // Group by type for batch sending
     const traces = events.filter(e => e.type === 'trace').map(e => e.data);
+    const interactions = events.filter(e => e.type === 'interaction').map(e => e.data);
     const feedbacks = events.filter(e => e.type === 'feedback').map(e => e.data);
     const identifies = events.filter(e => e.type === 'identify').map(e => e.data);
 
     // Send in parallel, fire-and-forget
     const promises: Promise<void>[] = [];
 
-    if (traces.length > 0) {
-      promises.push(this.sendBatch('/events/track', traces));
+    // Combine traces and interactions - both go to /events/track
+    const allTraces = [...traces, ...interactions];
+    if (allTraces.length > 0) {
+      promises.push(this.sendBatch('/events/track', allTraces));
     }
     if (feedbacks.length > 0) {
       promises.push(this.sendBatch('/signals/track', feedbacks));
