@@ -49,7 +49,7 @@ export interface Attachment {
 
 export interface TraceData {
   traceId: string;
-  provider: 'openai' | 'anthropic' | 'ai-sdk' | 'unknown';
+  provider: 'openai' | 'anthropic' | 'ai-sdk' | 'gemini' | 'bedrock' | 'unknown';
   model: string;
   input: unknown;
   output?: unknown;
@@ -130,7 +130,7 @@ export type WithTraceId<T> = T & { _traceId: string };
 /**
  * Provider detection result
  */
-export type ProviderType = 'openai' | 'anthropic' | 'ai-sdk' | 'unknown';
+export type ProviderType = 'openai' | 'anthropic' | 'ai-sdk' | 'gemini' | 'bedrock' | 'unknown';
 
 // ============================================
 // Interactions (Server SDK)

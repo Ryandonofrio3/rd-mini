@@ -39,6 +39,8 @@ import { Transport } from './transport.js';
 import { wrapOpenAI } from './wrappers/openai.js';
 import { wrapAnthropic } from './wrappers/anthropic.js';
 import { wrapAISDKModel } from './wrappers/ai-sdk.js';
+import { wrapGemini } from './wrappers/gemini.js';
+import { wrapBedrock } from './wrappers/bedrock.js';
 
 // Global context storage for interaction tracking
 const interactionStorage = new AsyncLocalStorage<InteractionContext>();
@@ -315,6 +317,12 @@ export class Raindrop {
           context,
           options
         ) as T;
+
+      case 'gemini':
+        return wrapGemini(client as Parameters<typeof wrapGemini>[0], context) as T;
+
+      case 'bedrock':
+        return wrapBedrock(client as Parameters<typeof wrapBedrock>[0], context) as T;
 
       default:
         if (this.config.debug) {
@@ -927,6 +935,24 @@ export class Raindrop {
     // Vercel AI SDK: has specificationVersion (newer versions)
     if (c.specificationVersion !== undefined) {
       return 'ai-sdk';
+    }
+
+    // Google Gemini: has getGenerativeModel method
+    if (typeof c.getGenerativeModel === 'function') {
+      return 'gemini';
+    }
+
+    // AWS Bedrock: has send method and specific config shape
+    if (typeof c.send === 'function' && c.config && typeof c.config === 'object') {
+      const config = c.config as Record<string, unknown>;
+      // Check for Bedrock-specific config properties
+      if (config.serviceId === 'Bedrock Runtime' || config.serviceId === 'BedrockRuntime') {
+        return 'bedrock';
+      }
+      // Also check by endpoint pattern
+      if (typeof config.endpoint === 'function') {
+        return 'bedrock';
+      }
     }
 
     return 'unknown';
