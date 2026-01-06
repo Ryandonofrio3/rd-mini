@@ -16,6 +16,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   RaindropConfig,
+  RaindropPlugin,
   UserTraits,
   FeedbackOptions,
   SignalOptions,
@@ -36,9 +37,85 @@ import { Transport } from './transport.js';
 import { wrapOpenAI } from './wrappers/openai.js';
 import { wrapAnthropic } from './wrappers/anthropic.js';
 import { wrapAISDKModel } from './wrappers/ai-sdk.js';
+import { createPiiPlugin } from './plugins/pii.js';
 
 // Global context storage for interaction tracking
 const interactionStorage = new AsyncLocalStorage<InteractionContext>();
+
+/**
+ * Manual span for async workflows
+ * Use when you need to start and end a span in different places
+ */
+export class ManualSpan {
+  private span: SpanData;
+  private raindrop: Raindrop;
+  private context: InteractionContext | undefined;
+  private ended = false;
+
+  constructor(
+    span: SpanData,
+    raindrop: Raindrop,
+    context: InteractionContext | undefined
+  ) {
+    this.span = span;
+    this.raindrop = raindrop;
+    this.context = context;
+  }
+
+  /** Get the span ID */
+  get id(): string {
+    return this.span.spanId;
+  }
+
+  /** Record input data for the span */
+  recordInput(data: unknown): this {
+    this.span.input = data;
+    return this;
+  }
+
+  /** Record output data for the span */
+  recordOutput(data: unknown): this {
+    this.span.output = data;
+    return this;
+  }
+
+  /** Set properties on the span */
+  setProperties(props: Record<string, unknown>): this {
+    this.span.properties = { ...this.span.properties, ...props };
+    return this;
+  }
+
+  /**
+   * End the span and record it
+   * @param error Optional error message if the span failed
+   */
+  end(error?: string): void {
+    if (this.ended) {
+      console.warn('[raindrop] Span already ended:', this.id);
+      return;
+    }
+
+    this.ended = true;
+    const endTime = Date.now();
+
+    this.span.endTime = endTime;
+    this.span.latencyMs = endTime - this.span.startTime;
+    if (error) {
+      this.span.error = error;
+    }
+
+    // Notify plugins (can mutate span before storing)
+    this.raindrop._notifySpan(this.span);
+
+    // If within an interaction, add to its spans
+    if (this.context) {
+      this.context.spans.push(this.span);
+    } else {
+      // Standalone span - send as individual trace
+      this.raindrop._sendToolTrace(this.span);
+    }
+  }
+}
 
 /**
  * Interaction object returned by begin()
@@ -118,7 +195,7 @@ export class Interaction {
     this.finished = true;
 
     // Merge any final options
-    if (options?.output) {
+    if (options?.output !== undefined) {
       this.context.output = options.output;
     }
     if (options?.properties) {
@@ -166,6 +243,9 @@ export class Interaction {
       span.latencyMs = endTime - startTime;
       span.output = result;
 
+      // Notify plugins (can mutate span before storing)
+      this.raindrop._notifySpan(span);
+
       this.context.spans.push(span);
 
       return result;
@@ -176,6 +256,9 @@ export class Interaction {
       span.latencyMs = endTime - startTime;
       span.error = error instanceof Error ? error.message : String(error);
 
+      // Notify plugins (can mutate span before storing)
+      this.raindrop._notifySpan(span);
+
       this.context.spans.push(span);
 
       throw error;
@@ -184,7 +267,8 @@ export class Interaction {
 }
 
 export class Raindrop {
-  private config: Required<RaindropConfig>;
+  private config: Required<Omit<RaindropConfig, 'plugins'>>;
+  private plugins: RaindropPlugin[];
   private transport: Transport;
   private currentUserId?: string;
   private _currentUserTraits?: UserTraits; // Stored for future use
@@ -200,7 +284,14 @@ export class Raindrop {
       flushInterval: config.flushInterval ?? DEFAULT_CONFIG.flushInterval,
       maxQueueSize: config.maxQueueSize ?? DEFAULT_CONFIG.maxQueueSize,
       maxRetries: config.maxRetries ?? DEFAULT_CONFIG.maxRetries,
+      redactPii: config.redactPii ?? DEFAULT_CONFIG.redactPii,
     };
+
+    // Build plugins list, adding PII plugin if redactPii is enabled
+    this.plugins = config.plugins ?? [];
+    if (config.redactPii) {
+      this.plugins = [createPiiPlugin(), ...this.plugins];
+    }
 
     this.transport = new Transport({
       apiKey: this.config.apiKey,
@@ -213,10 +304,120 @@ export class Raindrop {
     });
 
     if (this.config.debug) {
+      const pluginNames = this.plugins.map(p => p.name);
       console.log('[raindrop] Initialized', {
         baseUrl: this.config.baseUrl,
         disabled: this.config.disabled,
+        plugins: pluginNames.length > 0 ? pluginNames : undefined,
       });
+    }
+  }
+
+  /**
+   * Call onInteractionStart hook on all plugins
+   * @internal
+   */
+  private callOnInteractionStart(ctx: InteractionContext): void {
+    for (const plugin of this.plugins) {
+      if (plugin.onInteractionStart) {
+        try {
+          plugin.onInteractionStart(ctx);
+        } catch (error) {
+          if (this.config.debug) {
+            console.warn(`[raindrop] Plugin ${plugin.name}.onInteractionStart threw:`, error);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Call onInteractionEnd hook on all plugins
+   * @internal
+   */
+  private callOnInteractionEnd(ctx: InteractionContext): void {
+    for (const plugin of this.plugins) {
+      if (plugin.onInteractionEnd) {
+        try {
+          plugin.onInteractionEnd(ctx);
+        } catch (error) {
+          if (this.config.debug) {
+            console.warn(`[raindrop] Plugin ${plugin.name}.onInteractionEnd threw:`, error);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Call onSpan hook on all plugins
+   * @internal
+   */
+  private callOnSpan(span: SpanData): void {
+    for (const plugin of this.plugins) {
+      if (plugin.onSpan) {
+        try {
+          plugin.onSpan(span);
+        } catch (error) {
+          if (this.config.debug) {
+            console.warn(`[raindrop] Plugin ${plugin.name}.onSpan threw:`, error);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Call onTrace hook on all plugins
+   * @internal
+   */
+  private callOnTrace(trace: TraceData): void {
+    for (const plugin of this.plugins) {
+      if (plugin.onTrace) {
+        try {
+          plugin.onTrace(trace);
+        } catch (error) {
+          if (this.config.debug) {
+            console.warn(`[raindrop] Plugin ${plugin.name}.onTrace threw:`, error);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Call flush on all plugins
+   * @internal
+   */
+  private async callPluginFlush(): Promise<void> {
+    for (const plugin of this.plugins) {
+      if (plugin.flush) {
+        try {
+          await plugin.flush();
+        } catch (error) {
+          if (this.config.debug) {
+            console.warn(`[raindrop] Plugin ${plugin.name}.flush threw:`, error);
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Call shutdown on all plugins
+   * @internal
+   */
+  private async callPluginShutdown(): Promise<void> {
+    for (const plugin of this.plugins) {
+      if (plugin.shutdown) {
+        try {
+          await plugin.shutdown();
+        } catch (error) {
+          if (this.config.debug) {
+            console.warn(`[raindrop] Plugin ${plugin.name}.shutdown threw:`, error);
+          }
+        }
+      }
     }
   }
 
@@ -363,6 +564,9 @@ export class Raindrop {
     // Also set it in AsyncLocalStorage so wrapped clients can find it
     interactionStorage.enterWith(context);
 
+    // Notify plugins
+    this.callOnInteractionStart(context);
+
     if (this.config.debug) {
       console.log('[raindrop] Interaction started:', interactionId);
     }
@@ -380,6 +584,8 @@ export class Raindrop {
   resumeInteraction(eventId: string): Interaction {
     const existing = this.activeInteractions.get(eventId);
     if (existing) {
+      // Re-enter context so wrapped clients can find it
+      interactionStorage.enterWith(existing.getContext());
       return existing;
     }
 
@@ -398,6 +604,8 @@ export class Raindrop {
 
     const interaction = new Interaction(context, this);
     this.activeInteractions.set(eventId, interaction);
+    // Enter context so wrapped clients can find it
+    interactionStorage.enterWith(context);
     return interaction;
   }
 
@@ -411,6 +619,16 @@ export class Raindrop {
 
     // Remove from active interactions
     this.activeInteractions.delete(context.interactionId);
+
+    // Clear context if it matches this interaction (prevent misattribution)
+    const currentContext = interactionStorage.getStore();
+    if (currentContext?.interactionId === context.interactionId) {
+      // Note: enterWith(undefined) clears the context for this async chain
+      interactionStorage.enterWith(undefined as unknown as InteractionContext);
+    }
+
+    // Notify plugins (can mutate context before sending)
+    this.callOnInteractionEnd(context);
 
     this.transport.sendInteraction({
       interactionId: context.interactionId,
@@ -450,6 +668,9 @@ export class Raindrop {
    * Flush all pending events (without closing)
    */
   async flush(): Promise<void> {
+    // Flush plugins first (they may buffer data)
+    await this.callPluginFlush();
+
     await this.transport.flush();
 
     if (this.config.debug) {
@@ -461,6 +682,12 @@ export class Raindrop {
    * Flush all pending events and close
    */
   async close(): Promise<void> {
+    // Flush plugins first
+    await this.callPluginFlush();
+
+    // Then shutdown plugins
+    await this.callPluginShutdown();
+
     await this.transport.close();
 
     if (this.config.debug) {
@@ -500,6 +727,9 @@ export class Raindrop {
       properties: options.properties,
       spans: [],
     };
+
+    // Notify plugins
+    this.callOnInteractionStart(context);
 
     if (this.config.debug) {
       console.log('[raindrop] Interaction started:', interactionId);
@@ -584,12 +814,15 @@ export class Raindrop {
         span.latencyMs = endTime - startTime;
         span.output = result;
 
+        // Notify plugins (can mutate span before storing)
+        self._notifySpan(span);
+
         // If within an interaction, add to its spans
         if (context) {
           context.spans.push(span);
         } else {
           // Standalone tool call - send as individual trace
-          self.sendToolTrace(span);
+          self._sendToolTrace(span);
         }
 
         return result;
@@ -600,10 +833,13 @@ export class Raindrop {
         span.latencyMs = endTime - startTime;
         span.error = error instanceof Error ? error.message : String(error);
 
+        // Notify plugins (can mutate span before storing)
+        self._notifySpan(span);
+
         if (context) {
           context.spans.push(span);
         } else {
-          self.sendToolTrace(span);
+          self._sendToolTrace(span);
         }
 
         throw error;
@@ -620,6 +856,52 @@ export class Raindrop {
   }
 
   /**
+   * Start a manual span for async workflows
+   *
+   * Use this when you need to start and end a span in different places,
+   * such as in async callbacks or distributed workflows.
+   *
+   * @example
+   * const span = raindrop.startSpan('process_document', { type: 'tool' });
+   * span.recordInput({ docId: '123' });
+   *
+   * try {
+   *   const result = await processDocument(docId);
+   *   span.recordOutput(result);
+   *   span.end();
+   * } catch (error) {
+   *   span.end(error.message);
+   * }
+   */
+  startSpan(
+    name: string,
+    options: {
+      type?: 'tool' | 'ai';
+      version?: number;
+      properties?: Record<string, unknown>;
+    } = {}
+  ): ManualSpan {
+    const context = this.getInteractionContext();
+    const spanId = generateId('span');
+
+    if (this.config.debug) {
+      console.log('[raindrop] Manual span started:', name, spanId);
+    }
+
+    const span: SpanData = {
+      spanId,
+      parentId: context?.interactionId,
+      name,
+      type: options.type || 'tool',
+      version: options.version,
+      startTime: Date.now(),
+      properties: options.properties,
+    };
+
+    return new ManualSpan(span, this, context);
+  }
+
+  /**
    * Internal: Send an interaction with all its spans
    */
   private sendInteraction(
@@ -628,12 +910,20 @@ export class Raindrop {
   ): void {
     this.lastTraceId = context.interactionId;
 
+    // Update context with final values for plugin access
+    if (result.output !== undefined) {
+      context.output = result.output;
+    }
+
+    // Notify plugins (can mutate context before sending)
+    this.callOnInteractionEnd(context);
+
     this.transport.sendInteraction({
       interactionId: context.interactionId,
       userId: context.userId,
       event: context.event || 'interaction',
       input: context.input,
-      output: result.output,
+      output: context.output,
       startTime: context.startTime,
       endTime: result.endTime,
       latencyMs: result.latencyMs,
@@ -645,9 +935,18 @@ export class Raindrop {
   }
 
   /**
-   * Internal: Send a standalone tool trace
+   * Internal: Notify plugins when a span completes
+   * @internal
    */
-  private sendToolTrace(span: SpanData): void {
+  _notifySpan(span: SpanData): void {
+    this.callOnSpan(span);
+  }
+
+  /**
+   * Internal: Send a standalone tool trace
+   * @internal
+   */
+  _sendToolTrace(span: SpanData): void {
     this.lastTraceId = span.spanId;
 
     this.transport.sendTrace({
@@ -669,6 +968,10 @@ export class Raindrop {
    */
   private sendTrace(trace: TraceData): void {
     this.lastTraceId = trace.traceId;
+
+    // Notify plugins (can mutate trace before sending)
+    this.callOnTrace(trace);
+
     this.transport.sendTrace(trace);
   }
 

@@ -22,6 +22,52 @@ export interface RaindropConfig {
   maxQueueSize?: number;
   /** Max retry attempts (default: 3) */
   maxRetries?: number;
+  /** Plugins for extending SDK behavior (PII redaction, OTEL export, etc.) */
+  plugins?: RaindropPlugin[];
+  /** Enable PII redaction (convenience option, equivalent to adding PII plugin) */
+  redactPii?: boolean;
+}
+
+// ============================================
+// Plugins
+// ============================================
+
+/**
+ * Plugin interface for extending Raindrop SDK behavior.
+ * Plugins receive lifecycle hooks and can mutate data before it's sent.
+ *
+ * @example
+ * ```typescript
+ * const myPlugin: RaindropPlugin = {
+ *   name: 'my-plugin',
+ *   onTrace(trace) {
+ *     // Mutate trace data before sending
+ *     trace.properties = { ...trace.properties, customField: 'value' };
+ *   }
+ * };
+ * ```
+ */
+export interface RaindropPlugin {
+  /** Unique plugin name for debugging */
+  name: string;
+
+  /** Called when an interaction starts (begin/withInteraction) */
+  onInteractionStart?(ctx: InteractionContext): void;
+
+  /** Called when an interaction ends (before sending to transport) */
+  onInteractionEnd?(ctx: InteractionContext): void;
+
+  /** Called when a span completes (tool/AI call within interaction) */
+  onSpan?(span: SpanData): void;
+
+  /** Called when a trace is created (standalone wrapped AI call) */
+  onTrace?(trace: TraceData): void;
+
+  /** Called during flush - plugins should send any buffered data */
+  flush?(): Promise<void>;
+
+  /** Called during shutdown - plugins should cleanup resources */
+  shutdown?(): Promise<void>;
 }
 
 export interface UserTraits {
@@ -37,6 +83,8 @@ export interface UserTraits {
 
 export interface Attachment {
   type: 'code' | 'text' | 'image' | 'iframe';
+  /** Optional unique ID for targeting this attachment with signals */
+  attachmentId?: string;
   name?: string;
   value: string;
   role: 'input' | 'output';

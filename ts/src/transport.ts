@@ -12,7 +12,7 @@ import {
   formatIdentify,
   type InteractionPayload,
 } from './core/format.js';
-import { delay, DEFAULT_CONFIG } from './core/utils.js';
+import { delay, DEFAULT_CONFIG, MAX_EVENT_SIZE_BYTES } from './core/utils.js';
 
 export interface TransportConfig {
   apiKey: string;
@@ -114,19 +114,38 @@ export class Transport {
    * Enqueue an event for sending
    */
   private enqueue(event: QueuedEvent): void {
+    // Check event size
+    try {
+      const eventSize = JSON.stringify(event.data).length;
+      if (eventSize > MAX_EVENT_SIZE_BYTES) {
+        if (this.config.debug) {
+          console.warn(`[raindrop] Event exceeds 1MB limit (${(eventSize / 1024 / 1024).toFixed(2)}MB), skipping`);
+        }
+        return;
+      }
+    } catch {
+      // If we can't stringify, let it through and let the API handle it
+    }
+
+    // Check buffer capacity
+    if (this.queue.length >= this.maxQueueSize) {
+      if (this.config.debug) {
+        console.warn('[raindrop] Buffer full, discarding oldest event');
+      }
+      this.queue.shift(); // Remove oldest event
+    } else if (this.queue.length >= this.maxQueueSize * 0.8) {
+      if (this.config.debug) {
+        console.warn(`[raindrop] Buffer at ${Math.round(this.queue.length / this.maxQueueSize * 100)}% capacity`);
+      }
+    }
+
     this.queue.push(event);
 
     if (this.config.debug) {
       console.log('[raindrop] Queued event:', event.type, event.data);
     }
 
-    // Flush if queue is full
-    if (this.queue.length >= this.maxQueueSize) {
-      this.flush();
-      return;
-    }
-
-    // Schedule flush
+    // Schedule flush if not already scheduled
     if (!this.flushTimeout) {
       this.flushTimeout = setTimeout(() => this.flush(), this.flushInterval);
     }

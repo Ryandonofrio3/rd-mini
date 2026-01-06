@@ -399,3 +399,219 @@ Phase 2 (Docs):    ~1 hour - error handling docs, migration guide
 - Future (if requested): Bedrock, Azure OpenAI, direct Gemini
 
 The SDK is **feature complete** in terms of code. The `wrap()` pattern is simpler and more maintainable than the OTEL approach.
+
+---
+
+## Phase 5: Plugin Architecture
+
+### Overview
+
+rd-mini core stays lean (1 dep, zero OTEL). Enterprise features ship as opt-in plugins that hook into the lifecycle without polluting core.
+
+**Goal:** Full raindrop-ai parity without the 70+ dependency tax.
+
+### Core Plugin Interface
+
+```typescript
+interface RaindropPlugin {
+  name: string;
+
+  // Lifecycle hooks (called in registration order)
+  onInteractionStart?(ctx: InteractionContext): void;
+  onInteractionEnd?(ctx: InteractionContext): void;
+  onSpan?(span: SpanData): void;
+  onTrace?(trace: TraceData): void;
+
+  // Cleanup
+  flush?(): Promise<void>;
+  shutdown?(): Promise<void>;
+}
+```
+
+**Key design decisions:**
+- Plugins CAN mutate data (required for PII redaction)
+- Hooks fire BEFORE formatting/transport
+- Plugin order matters: `[otel, pii]` means OTEL sees original, transport sees redacted
+- Core has zero knowledge of plugin internals (no OTEL types leak in)
+
+### Lifecycle Call Order
+
+```
+begin() / withInteraction()
+    ↓
+InteractionContext created
+    ↓
+onInteractionStart(ctx)        ← plugins notified
+    ↓
+[user code runs]
+    ↓
+wrapTool() / withTool() / startSpan()
+    ↓
+SpanData created on span end
+    ↓
+onSpan(span)                   ← plugins notified (can mutate)
+    ↓
+wrap() AI call completes
+    ↓
+TraceData created
+    ↓
+onTrace(trace)                 ← plugins notified (can mutate)
+    ↓
+format()                       ← uses (possibly mutated) data
+    ↓
+transport.send()
+    ↓
+finish() called
+    ↓
+onInteractionEnd(ctx)          ← plugins notified
+    ↓
+formatInteraction()
+    ↓
+transport.send()
+
+flush() / close()
+    ↓
+await plugin.flush() for each  ← in registration order
+    ↓
+await plugin.shutdown() for each
+    ↓
+transport.flush()
+    ↓
+transport.close()
+```
+
+### Core Changes Required
+
+**TypeScript (`ts/src/raindrop.ts`):**
+1. Add `plugins?: RaindropPlugin[]` to `RaindropConfig`
+2. Store plugins in Raindrop class
+3. Add private `callPluginHook(hook, data)` helper
+4. Insert hook calls at lifecycle points
+
+**Python (`python/src/raindrop/client.py`):**
+1. Add `plugins: list[RaindropPlugin]` to config
+2. Same lifecycle hook points
+3. Protocol class for type hints
+
+**Estimated effort:** 1-2 hours for both SDKs
+
+### Plugin Packages
+
+#### @raindrop/pii
+
+**Purpose:** Regex-based PII redaction before data leaves the client.
+
+```typescript
+import { createPiiPlugin } from '@raindrop/pii';
+
+new Raindrop({
+  apiKey,
+  plugins: [
+    createPiiPlugin({
+      patterns: ['email', 'ssn', 'creditCard', 'phone'],
+      customPatterns: [/CUSTOM-\d+/g],
+      allowList: ['support@company.com'],
+      redactNames: true,
+    })
+  ]
+});
+
+// Or simple built-in:
+new Raindrop({ apiKey, redactPii: true });
+```
+
+**Implementation:**
+- `onTrace(trace)` - mutates `trace.input`, `trace.output`
+- `onInteractionEnd(ctx)` - mutates `ctx.input`, `ctx.output`
+- `onSpan(span)` - mutates `span.input`, `span.output`
+- ~200 lines, regex patterns from old SDK
+
+**Patterns:** email, SSN, credit cards, phone, IP, names list
+
+**Estimated effort:** 3-4 hours
+
+#### @raindrop/otel
+
+**Purpose:** Export spans to OpenTelemetry collectors (Datadog, Honeycomb, Jaeger, etc.)
+
+```typescript
+import { createOtelPlugin } from '@raindrop/otel';
+
+new Raindrop({
+  apiKey,
+  plugins: [
+    createOtelPlugin({
+      exporterUrl: 'https://otel-collector.internal:4318',
+      serviceName: 'my-ai-service',
+      tracerProvider: existingProvider, // optional
+    })
+  ]
+});
+```
+
+**Implementation:**
+- Peer dep on `@opentelemetry/api`, `@opentelemetry/sdk-trace-base`
+- `onInteractionStart` → start OTEL span
+- `onSpan` → create child span
+- `onTrace` → create child span with AI attributes
+- `onInteractionEnd` → end root span
+- W3C trace context propagation
+
+**Estimated effort:** 1-2 days
+
+### Migration Path
+
+| Old raindrop-ai | New rd-mini |
+|-----------------|-------------|
+| `writeKey` | `apiKey` |
+| `redactPii: true` | `redactPii: true` (same) |
+| OTEL auto-enabled | `plugins: [createOtelPlugin()]` |
+| `createSpanProcessor()` | `createOtelPlugin({ ... })` |
+
+### Implementation Order
+
+**Phase 5.1: Core Plugin System**
+- [ ] Add `RaindropPlugin` interface to `core/types.ts`
+- [ ] Add `plugins` config option
+- [ ] Implement hook calling in `raindrop.ts`
+- [ ] Implement hook calling in `client.py`
+- [ ] Add tests for plugin lifecycle
+
+**Phase 5.2: PII Plugin**
+- [ ] Create `packages/pii/` directory structure
+- [ ] Port regex patterns from old SDK
+- [ ] Implement mutation hooks
+- [ ] Add `redactPii: true` shorthand to core
+- [ ] Tests
+
+**Phase 5.3: OTEL Plugin**
+- [ ] Create `packages/otel/` directory structure
+- [ ] Implement span creation/export
+- [ ] W3C trace context propagation
+- [ ] Test with Jaeger/Zipkin
+- [ ] Document migration from old SDK
+
+### Design Decisions
+
+1. **Async hooks?** No - keep sync. Async plugins can queue internally.
+
+2. **Plugin errors?** Swallow + log in debug mode (matches transport behavior)
+
+3. **Built-in PII?** Yes - `redactPii: true` for convenience. Patterns are small (~5KB).
+
+4. **Monorepo structure:**
+   ```
+   raindrop-mini/
+   ├── packages/
+   │   ├── core/        → rd-mini
+   │   ├── pii/         → @raindrop/pii
+   │   └── otel/        → @raindrop/otel
+   ```
+
+### Success Criteria
+
+- [ ] Core stays at 1 runtime dependency
+- [ ] OTEL users can migrate with plugin + config change
+- [ ] PII redaction works identically to old SDK
+- [ ] No breaking changes to wrap/interaction APIs
+- [ ] Plugin interface documentable in 1 page

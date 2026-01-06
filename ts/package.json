@@ -14,6 +14,18 @@
     "./browser": {
       "import": "./dist/browser/index.js",
       "types": "./dist/browser/index.d.ts"
+    },
+    "./plugins": {
+      "import": "./dist/plugins/index.js",
+      "types": "./dist/plugins/index.d.ts"
+    },
+    "./plugins/pii": {
+      "import": "./dist/plugins/pii.js",
+      "types": "./dist/plugins/pii.d.ts"
+    },
+    "./plugins/otel": {
+      "import": "./dist/plugins/otel.js",
+      "types": "./dist/plugins/otel.d.ts"
     }
   },
   "scripts": {
@@ -46,6 +58,7 @@
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
+    "@opentelemetry/api": "^1.0.0",
     "ai": "^3.0.0 || ^4.0.0",
     "openai": "^4.0.0"
   },
@@ -58,6 +71,12 @@
     },
     "openai": {
       "optional": true
+    },
+    "@opentelemetry/api": {
+      "optional": true
     }
+  },
+  "optionalDependencies": {
+    "@opentelemetry/api": "^1.0.0"
   }
 }

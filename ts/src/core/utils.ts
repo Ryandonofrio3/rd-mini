@@ -3,6 +3,17 @@
  */
 
 /**
+ * SDK metadata - keep in sync with package.json
+ */
+export const SDK_NAME = 'rd-mini';
+export const SDK_VERSION = '0.1.0';
+
+/**
+ * Maximum event size in bytes (1MB)
+ */
+export const MAX_EVENT_SIZE_BYTES = 1 * 1024 * 1024;
+
+/**
  * Generate a unique trace/event ID
  */
 export function generateId(prefix: string = 'trace'): string {
@@ -29,6 +40,7 @@ export const DEFAULT_CONFIG = {
   flushInterval: 1000,
   maxQueueSize: 100,
   maxRetries: 3,
+  redactPii: false,
 } as const;
 
 /**

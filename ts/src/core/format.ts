@@ -11,6 +11,68 @@ import type {
   Attachment,
   SignalOptions,
 } from './types.js';
+import { SDK_NAME, SDK_VERSION } from './utils.js';
+
+/**
+ * Get SDK context metadata to include in events
+ */
+function getContext(): Record<string, unknown> {
+  return {
+    library: {
+      name: SDK_NAME,
+      version: SDK_VERSION,
+    },
+  };
+}
+
+/**
+ * Safely stringify a value, handling circular refs, BigInt, and errors
+ */
+function safeStringify(value: unknown): string {
+  if (typeof value === 'string') return value;
+  try {
+    const seen = new WeakSet();
+    return JSON.stringify(value, (_key, val) => {
+      // Handle BigInt
+      if (typeof val === 'bigint') {
+        return val.toString();
+      }
+      // Handle circular references
+      if (val !== null && typeof val === 'object') {
+        if (seen.has(val)) {
+          return '[Circular]';
+        }
+        seen.add(val);
+      }
+      return val;
+    });
+  } catch {
+    return String(value);
+  }
+}
+
+/**
+ * Safely convert input/output to string format for API
+ */
+function toApiString(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === 'string') return value;
+  return safeStringify(value);
+}
+
+/**
+ * Convert attachment to API format (attachmentId → attachment_id)
+ */
+export function toApiAttachment(att: Attachment): Record<string, unknown> {
+  return {
+    type: att.type,
+    name: att.name,
+    value: att.value,
+    role: att.role,
+    language: att.language,
+    ...(att.attachmentId && { attachment_id: att.attachmentId }),
+  };
+}
 
 // ============================================
 // Interaction Data (for transport)
@@ -46,6 +108,7 @@ export function formatTrace(trace: TraceData): Record<string, unknown> {
     event: 'ai_interaction',
     timestamp: new Date(trace.startTime).toISOString(),
     properties: {
+      $context: getContext(),
       provider: trace.provider,
       conversation_id: trace.conversationId,
       latency_ms: trace.latencyMs,
@@ -61,8 +124,8 @@ export function formatTrace(trace: TraceData): Record<string, unknown> {
     },
     ai_data: {
       model: trace.model,
-      input: typeof trace.input === 'string' ? trace.input : JSON.stringify(trace.input),
-      output: trace.output ? (typeof trace.output === 'string' ? trace.output : JSON.stringify(trace.output)) : undefined,
+      input: toApiString(trace.input),
+      output: toApiString(trace.output),
       convo_id: trace.conversationId,
     },
     // Include tool calls if present
@@ -70,7 +133,7 @@ export function formatTrace(trace: TraceData): Record<string, unknown> {
       attachments: trace.toolCalls.map(tc => ({
         type: 'code',
         name: `tool:${tc.name}`,
-        value: JSON.stringify({ arguments: tc.arguments, result: tc.result }),
+        value: safeStringify({ arguments: tc.arguments, result: tc.result }),
         role: 'output',
         language: 'json',
       })),
@@ -86,7 +149,7 @@ export function formatInteraction(interaction: InteractionPayload): Record<strin
   const spanAttachments = interaction.spans.map(span => ({
     type: 'code',
     name: `${span.type}:${span.name}`,
-    value: JSON.stringify({
+    value: safeStringify({
       spanId: span.spanId,
       input: span.input,
       output: span.output,
@@ -98,9 +161,9 @@ export function formatInteraction(interaction: InteractionPayload): Record<strin
     language: 'json',
   }));
 
-  // Combine user attachments with span attachments
+  // Combine user attachments (mapped to API format) with span attachments
   const allAttachments = [
-    ...(interaction.attachments || []),
+    ...(interaction.attachments || []).map(toApiAttachment),
     ...spanAttachments,
   ];
 
@@ -110,14 +173,15 @@ export function formatInteraction(interaction: InteractionPayload): Record<strin
     event: interaction.event,
     timestamp: new Date(interaction.startTime).toISOString(),
     properties: {
+      $context: getContext(),
       latency_ms: interaction.latencyMs,
       span_count: interaction.spans.length,
       ...(interaction.error && { error: interaction.error }),
       ...interaction.properties,
     },
     ai_data: {
-      input: interaction.input,
-      output: interaction.output,
+      input: toApiString(interaction.input),
+      output: toApiString(interaction.output),
       convo_id: interaction.conversationId,
     },
     ...(allAttachments.length > 0 && { attachments: allAttachments }),
@@ -193,13 +257,16 @@ export function formatAiEvent(options: {
     user_id: options.userId,
     event: options.event,
     timestamp: new Date().toISOString(),
-    properties: options.properties || {},
+    properties: {
+      $context: getContext(),
+      ...options.properties,
+    },
     ai_data: {
       model: options.model,
       input: options.input,
       output: options.output,
       convo_id: options.convoId,
     },
-    ...(options.attachments && { attachments: options.attachments }),
+    ...(options.attachments && { attachments: options.attachments.map(toApiAttachment) }),
   };
 }

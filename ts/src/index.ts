@@ -22,6 +22,7 @@
 export { Raindrop, Interaction } from './raindrop.js';
 export type {
   RaindropConfig,
+  RaindropPlugin,
   UserTraits,
   FeedbackOptions,
   RaindropRequestOptions,
