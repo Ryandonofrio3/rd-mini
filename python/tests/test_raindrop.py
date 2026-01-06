@@ -1,5 +1,5 @@
 """
-Tests for Raindrop Python SDK
+Tests for rd_mini Python SDK
 """
 
 import time
@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from raindrop import Raindrop
+from rd_mini import Raindrop
 
 
 # Mock OpenAI response classes

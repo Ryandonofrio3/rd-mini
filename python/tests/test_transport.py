@@ -8,8 +8,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from raindrop.transport import Transport
-from raindrop.types import FeedbackOptions, SpanData, TraceData, UserTraits
+from rd_mini.transport import Transport
+from rd_mini.types import FeedbackOptions, SpanData, TraceData, UserTraits
 
 
 class TestTransportDisabled:
@@ -17,7 +17,7 @@ class TestTransportDisabled:
 
     def test_does_not_send_when_disabled(self) -> None:
         """Test that disabled transport doesn't send."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_client_class.return_value = mock_client
 
@@ -43,7 +43,7 @@ class TestTransportSendTrace:
 
     def test_queues_and_sends_trace(self) -> None:
         """Test trace is queued and sent on flush."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -78,7 +78,7 @@ class TestTransportSendTrace:
 
     def test_includes_user_id(self) -> None:
         """Test userId is included when provided."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -105,7 +105,7 @@ class TestTransportSendTrace:
 
     def test_includes_error(self) -> None:
         """Test error is included when provided."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -136,7 +136,7 @@ class TestTransportSendFeedback:
 
     def test_sends_thumbs_up(self) -> None:
         """Test sending thumbs up feedback."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -161,7 +161,7 @@ class TestTransportSendFeedback:
 
     def test_sends_thumbs_down(self) -> None:
         """Test sending thumbs down feedback."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -179,7 +179,7 @@ class TestTransportSendFeedback:
 
     def test_sends_score(self) -> None:
         """Test sending score feedback."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -196,7 +196,7 @@ class TestTransportSendFeedback:
 
     def test_low_score_is_negative(self) -> None:
         """Test low score results in negative sentiment."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -216,7 +216,7 @@ class TestTransportSendIdentify:
 
     def test_sends_identify(self) -> None:
         """Test sending identify request."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -243,7 +243,7 @@ class TestTransportSendInteraction:
 
     def test_sends_interaction_with_spans(self) -> None:
         """Test sending interaction with spans."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -297,7 +297,7 @@ class TestTransportBatching:
 
     def test_batches_multiple_traces(self) -> None:
         """Test multiple traces are batched together."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
@@ -340,7 +340,7 @@ class TestTransportRetry:
 
     def test_retries_on_failure(self) -> None:
         """Test retry on server error."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_responses = [
                 MagicMock(is_success=False, status_code=500),
@@ -372,7 +372,7 @@ class TestTransportClose:
 
     def test_flushes_on_close(self) -> None:
         """Test flush is called on close."""
-        with patch("raindrop.transport.httpx.Client") as mock_client_class:
+        with patch("rd_mini.transport.httpx.Client") as mock_client_class:
             mock_client = MagicMock()
             mock_response = MagicMock()
             mock_response.is_success = True
