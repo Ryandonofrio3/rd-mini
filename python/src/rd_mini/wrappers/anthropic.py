@@ -5,9 +5,10 @@ Wraps Anthropic client to auto-capture all messages
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator
 
 from rd_mini.types import InteractionContext, SpanData, TraceData
 
@@ -67,7 +68,22 @@ class WrappedMessages:
             input_data = [{"role": "system", "content": system}, *messages]
 
         if is_streaming:
-            return self._handle_stream(
+            # Check if we're dealing with an async client by checking if create returns a coroutine
+            result = self._original.create(*args, **kwargs)
+            if inspect.iscoroutine(result):
+                # Return a coroutine that will resolve to TracedAnthropicStream
+                return self._handle_stream_async(
+                    result,
+                    trace_id=trace_id,
+                    start_time=start_time,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    properties=properties,
+                    model=model,
+                    input_data=input_data,
+                )
+            return TracedAnthropicStream(
+                stream=result,
                 trace_id=trace_id,
                 start_time=start_time,
                 user_id=user_id,
@@ -75,13 +91,24 @@ class WrappedMessages:
                 properties=properties,
                 model=model,
                 input_data=input_data,
-                args=args,
-                kwargs=kwargs,
+                context=self._context,
             )
 
         # Non-streaming
         try:
             response = self._original.create(*args, **kwargs)
+            # Handle async client
+            if inspect.iscoroutine(response):
+                return self._create_async(
+                    response,
+                    trace_id=trace_id,
+                    start_time=start_time,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    properties=properties,
+                    model=model,
+                    input_data=input_data,
+                )
             end_time = time.time()
 
             # Extract output content
@@ -193,8 +220,9 @@ class WrappedMessages:
                 )
             raise
 
-    def _handle_stream(
+    async def _handle_stream_async(
         self,
+        coro: Any,
         trace_id: str,
         start_time: float,
         user_id: str | None,
@@ -202,11 +230,9 @@ class WrappedMessages:
         properties: dict[str, Any],
         model: str,
         input_data: list[Any],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
     ) -> "TracedAnthropicStream":
-        """Handle streaming response."""
-        stream = self._original.create(*args, **kwargs)
+        """Handle async streaming response."""
+        stream = await coro
         return TracedAnthropicStream(
             stream=stream,
             trace_id=trace_id,
@@ -218,6 +244,131 @@ class WrappedMessages:
             input_data=input_data,
             context=self._context,
         )
+
+    async def _create_async(
+        self,
+        coro: Any,
+        trace_id: str,
+        start_time: float,
+        user_id: str | None,
+        conversation_id: str | None,
+        properties: dict[str, Any],
+        model: str,
+        input_data: list[Any],
+    ) -> Any:
+        """Handle async non-streaming response."""
+        try:
+            response = await coro
+            end_time = time.time()
+
+            # Extract output content
+            output = ""
+            if response.content:
+                for block in response.content:
+                    if hasattr(block, "text"):
+                        output += block.text
+
+            # Extract tool use
+            tool_calls = None
+            if response.content:
+                tool_uses = [b for b in response.content if hasattr(b, "type") and b.type == "tool_use"]
+                if tool_uses:
+                    tool_calls = [
+                        {
+                            "id": tc.id,
+                            "name": tc.name,
+                            "arguments": tc.input,
+                        }
+                        for tc in tool_uses
+                    ]
+
+            tokens = None
+            if response.usage:
+                tokens = {
+                    "input": response.usage.input_tokens,
+                    "output": response.usage.output_tokens,
+                    "total": response.usage.input_tokens + response.usage.output_tokens,
+                }
+
+            # Check for interaction context
+            interaction = self._context.get_interaction_context()
+
+            if interaction:
+                span = SpanData(
+                    span_id=trace_id,
+                    parent_id=interaction.interaction_id,
+                    name=f"anthropic:{model}",
+                    type="ai",
+                    start_time=start_time,
+                    end_time=end_time,
+                    latency_ms=int((end_time - start_time) * 1000),
+                    input=input_data,
+                    output=output,
+                    properties={
+                        **properties,
+                        "input_tokens": tokens["input"] if tokens else None,
+                        "output_tokens": tokens["output"] if tokens else None,
+                        "tool_calls": tool_calls,
+                    },
+                )
+                interaction.spans.append(span)
+            else:
+                self._context.send_trace(
+                    TraceData(
+                        trace_id=trace_id,
+                        provider="anthropic",
+                        model=model,
+                        input=input_data,
+                        output=output,
+                        start_time=start_time,
+                        end_time=end_time,
+                        latency_ms=int((end_time - start_time) * 1000),
+                        tokens=tokens,
+                        tool_calls=tool_calls,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        properties=properties,
+                    )
+                )
+
+            # Attach trace_id to response
+            response._trace_id = trace_id
+            return response
+
+        except Exception as e:
+            end_time = time.time()
+            interaction = self._context.get_interaction_context()
+
+            if interaction:
+                span = SpanData(
+                    span_id=trace_id,
+                    parent_id=interaction.interaction_id,
+                    name=f"anthropic:{model}",
+                    type="ai",
+                    start_time=start_time,
+                    end_time=end_time,
+                    latency_ms=int((end_time - start_time) * 1000),
+                    input=input_data,
+                    error=str(e),
+                )
+                interaction.spans.append(span)
+            else:
+                self._context.send_trace(
+                    TraceData(
+                        trace_id=trace_id,
+                        provider="anthropic",
+                        model=model,
+                        input=input_data,
+                        start_time=start_time,
+                        end_time=end_time,
+                        latency_ms=int((end_time - start_time) * 1000),
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        properties=properties,
+                        error=str(e),
+                    )
+                )
+            raise
 
 
 class TracedAnthropicStream:
@@ -257,6 +408,55 @@ class TracedAnthropicStream:
     def __iter__(self) -> Iterator[Any]:
         try:
             for event in self._stream:
+                # Handle different event types
+                event_type = getattr(event, "type", None)
+
+                if event_type == "content_block_delta":
+                    delta = getattr(event, "delta", None)
+                    if delta:
+                        delta_type = getattr(delta, "type", None)
+                        if delta_type == "text_delta":
+                            self._collected_content.append(delta.text)
+                        elif delta_type == "input_json_delta":
+                            # Tool input streaming
+                            idx = str(event.index)
+                            if idx in self._collected_tool_calls:
+                                self._collected_tool_calls[idx]["arguments"] += delta.partial_json
+
+                elif event_type == "content_block_start":
+                    content_block = getattr(event, "content_block", None)
+                    if content_block and getattr(content_block, "type", None) == "tool_use":
+                        idx = str(event.index)
+                        self._collected_tool_calls[idx] = {
+                            "id": content_block.id,
+                            "name": content_block.name,
+                            "arguments": "",
+                        }
+
+                elif event_type == "message_delta":
+                    usage = getattr(event, "usage", None)
+                    if usage:
+                        self._output_tokens = getattr(usage, "output_tokens", None)
+
+                elif event_type == "message_start":
+                    message = getattr(event, "message", None)
+                    if message:
+                        usage = getattr(message, "usage", None)
+                        if usage:
+                            self._input_tokens = getattr(usage, "input_tokens", None)
+
+                yield event
+
+            # Stream complete - send trace
+            self._finalize()
+
+        except Exception as e:
+            self._finalize(error=str(e))
+            raise
+
+    async def __aiter__(self) -> AsyncIterator[Any]:
+        try:
+            async for event in self._stream:
                 # Handle different event types
                 event_type = getattr(event, "type", None)
 

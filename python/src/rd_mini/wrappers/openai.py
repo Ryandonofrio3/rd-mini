@@ -5,14 +5,26 @@ Wraps OpenAI client to auto-capture all chat completions
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
-from typing import TYPE_CHECKING, Any, Callable, Iterator
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Iterator
 
 from rd_mini.types import InteractionContext, SpanData, TraceData
 
 if TYPE_CHECKING:
     from rd_mini.transport import Transport
+
+
+def safe_json_loads(s: str) -> Any:
+    """
+    Safely parse JSON, returning the raw string if parsing fails.
+    This prevents malformed tool call arguments from crashing the wrapper.
+    """
+    try:
+        return json.loads(s)
+    except json.JSONDecodeError:
+        return s
 
 
 class WrapperContext:
@@ -61,7 +73,22 @@ class WrappedChatCompletions:
         is_streaming = kwargs.get("stream", False)
 
         if is_streaming:
-            return self._handle_stream(
+            # Check if we're dealing with an async client by checking if create returns a coroutine
+            result = self._original.create(*args, **kwargs)
+            if inspect.iscoroutine(result):
+                # Return a coroutine that will resolve to TracedStream
+                return self._handle_stream_async(
+                    result,
+                    trace_id=trace_id,
+                    start_time=start_time,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    properties=properties,
+                    model=model,
+                    messages=messages,
+                )
+            return TracedStream(
+                stream=result,
                 trace_id=trace_id,
                 start_time=start_time,
                 user_id=user_id,
@@ -69,13 +96,24 @@ class WrappedChatCompletions:
                 properties=properties,
                 model=model,
                 messages=messages,
-                args=args,
-                kwargs=kwargs,
+                context=self._context,
             )
 
         # Non-streaming
         try:
             response = self._original.create(*args, **kwargs)
+            # Handle async client
+            if inspect.iscoroutine(response):
+                return self._create_async(
+                    response,
+                    trace_id=trace_id,
+                    start_time=start_time,
+                    user_id=user_id,
+                    conversation_id=conversation_id,
+                    properties=properties,
+                    model=model,
+                    messages=messages,
+                )
             end_time = time.time()
 
             output = response.choices[0].message.content if response.choices else ""
@@ -86,7 +124,7 @@ class WrappedChatCompletions:
                     {
                         "id": tc.id,
                         "name": tc.function.name,
-                        "arguments": json.loads(tc.function.arguments),
+                        "arguments": safe_json_loads(tc.function.arguments),
                     }
                     for tc in response.choices[0].message.tool_calls
                 ]
@@ -181,8 +219,9 @@ class WrappedChatCompletions:
                 )
             raise
 
-    def _handle_stream(
+    async def _handle_stream_async(
         self,
+        coro: Any,
         trace_id: str,
         start_time: float,
         user_id: str | None,
@@ -190,11 +229,9 @@ class WrappedChatCompletions:
         properties: dict[str, Any],
         model: str,
         messages: list[Any],
-        args: tuple[Any, ...],
-        kwargs: dict[str, Any],
     ) -> "TracedStream":
-        """Handle streaming response."""
-        stream = self._original.create(*args, **kwargs)
+        """Handle async streaming response."""
+        stream = await coro
         return TracedStream(
             stream=stream,
             trace_id=trace_id,
@@ -206,6 +243,125 @@ class WrappedChatCompletions:
             messages=messages,
             context=self._context,
         )
+
+    async def _create_async(
+        self,
+        coro: Any,
+        trace_id: str,
+        start_time: float,
+        user_id: str | None,
+        conversation_id: str | None,
+        properties: dict[str, Any],
+        model: str,
+        messages: list[Any],
+    ) -> Any:
+        """Handle async non-streaming response."""
+        try:
+            response = await coro
+            end_time = time.time()
+
+            output = response.choices[0].message.content if response.choices else ""
+            tool_calls = None
+
+            if response.choices and response.choices[0].message.tool_calls:
+                tool_calls = [
+                    {
+                        "id": tc.id,
+                        "name": tc.function.name,
+                        "arguments": safe_json_loads(tc.function.arguments),
+                    }
+                    for tc in response.choices[0].message.tool_calls
+                ]
+
+            tokens = None
+            if response.usage:
+                tokens = {
+                    "input": response.usage.prompt_tokens,
+                    "output": response.usage.completion_tokens,
+                    "total": response.usage.total_tokens,
+                }
+
+            # Check for interaction context
+            interaction = self._context.get_interaction_context()
+
+            if interaction:
+                # Add as span
+                span = SpanData(
+                    span_id=trace_id,
+                    parent_id=interaction.interaction_id,
+                    name=f"openai:{model}",
+                    type="ai",
+                    start_time=start_time,
+                    end_time=end_time,
+                    latency_ms=int((end_time - start_time) * 1000),
+                    input=messages,
+                    output=output,
+                    properties={
+                        **properties,
+                        "input_tokens": tokens["input"] if tokens else None,
+                        "output_tokens": tokens["output"] if tokens else None,
+                        "tool_calls": tool_calls,
+                    },
+                )
+                interaction.spans.append(span)
+            else:
+                # Send as standalone trace
+                self._context.send_trace(
+                    TraceData(
+                        trace_id=trace_id,
+                        provider="openai",
+                        model=model,
+                        input=messages,
+                        output=output,
+                        start_time=start_time,
+                        end_time=end_time,
+                        latency_ms=int((end_time - start_time) * 1000),
+                        tokens=tokens,
+                        tool_calls=tool_calls,
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        properties=properties,
+                    )
+                )
+
+            # Attach trace_id to response
+            response._trace_id = trace_id
+            return response
+
+        except Exception as e:
+            end_time = time.time()
+            interaction = self._context.get_interaction_context()
+
+            if interaction:
+                span = SpanData(
+                    span_id=trace_id,
+                    parent_id=interaction.interaction_id,
+                    name=f"openai:{model}",
+                    type="ai",
+                    start_time=start_time,
+                    end_time=end_time,
+                    latency_ms=int((end_time - start_time) * 1000),
+                    input=messages,
+                    error=str(e),
+                )
+                interaction.spans.append(span)
+            else:
+                self._context.send_trace(
+                    TraceData(
+                        trace_id=trace_id,
+                        provider="openai",
+                        model=model,
+                        input=messages,
+                        start_time=start_time,
+                        end_time=end_time,
+                        latency_ms=int((end_time - start_time) * 1000),
+                        user_id=user_id,
+                        conversation_id=conversation_id,
+                        properties=properties,
+                        error=str(e),
+                    )
+                )
+            raise
 
 
 class TracedStream:
@@ -273,6 +429,35 @@ class TracedStream:
             self._finalize(error=str(e))
             raise
 
+    async def __aiter__(self) -> AsyncIterator[Any]:
+        try:
+            async for chunk in self._stream:
+                # Collect content
+                if chunk.choices and chunk.choices[0].delta.content:
+                    self._collected_content.append(chunk.choices[0].delta.content)
+
+                # Collect tool calls
+                if chunk.choices and chunk.choices[0].delta.tool_calls:
+                    for tc in chunk.choices[0].delta.tool_calls:
+                        idx = tc.index
+                        if idx not in self._collected_tool_calls:
+                            self._collected_tool_calls[idx] = {"id": "", "name": "", "arguments": ""}
+                        if tc.id:
+                            self._collected_tool_calls[idx]["id"] = tc.id
+                        if tc.function and tc.function.name:
+                            self._collected_tool_calls[idx]["name"] = tc.function.name
+                        if tc.function and tc.function.arguments:
+                            self._collected_tool_calls[idx]["arguments"] += tc.function.arguments
+
+                yield chunk
+
+            # Stream complete - send trace
+            self._finalize()
+
+        except Exception as e:
+            self._finalize(error=str(e))
+            raise
+
     def _finalize(self, error: str | None = None) -> None:
         """Send trace on stream completion."""
         end_time = time.time()
@@ -284,7 +469,7 @@ class TracedStream:
                 {
                     "id": tc["id"],
                     "name": tc["name"],
-                    "arguments": json.loads(tc["arguments"]) if tc["arguments"] else {},
+                    "arguments": safe_json_loads(tc["arguments"]) if tc["arguments"] else {},
                 }
                 for tc in self._collected_tool_calls.values()
             ]

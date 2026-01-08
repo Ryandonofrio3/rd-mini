@@ -5,6 +5,18 @@
 
 import type { TraceData, RaindropRequestOptions, WithTraceId, InteractionContext, SpanData } from '../types.js';
 
+/**
+ * Safely parse JSON, returning the raw string if parsing fails.
+ * This prevents malformed tool call arguments from crashing the wrapper.
+ */
+function safeJsonParse(str: string): unknown {
+  try {
+    return JSON.parse(str);
+  } catch {
+    return str;
+  }
+}
+
 // Client types - flexible to handle both APIs
 type OpenAIClient = {
   chat?: {
@@ -170,7 +182,7 @@ function wrapChatCompletions(
       const toolCalls = response.choices[0]?.message?.tool_calls?.map(tc => ({
         id: tc.id,
         name: tc.function.name,
-        arguments: JSON.parse(tc.function.arguments),
+        arguments: safeJsonParse(tc.function.arguments),
       }));
 
       // Check if we're within an interaction
@@ -392,7 +404,7 @@ function wrapChatStream(
         const toolCalls = Array.from(collectedToolCalls.values()).map(tc => ({
           id: tc.id || '',
           name: tc.name,
-          arguments: tc.arguments ? JSON.parse(tc.arguments) : {},
+          arguments: tc.arguments ? safeJsonParse(tc.arguments) : {},
         }));
 
         if (interaction) {

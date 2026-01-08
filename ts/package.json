@@ -26,6 +26,10 @@
     "./plugins/otel": {
       "import": "./dist/plugins/otel.js",
       "types": "./dist/plugins/otel.d.ts"
+    },
+    "./vercel": {
+      "import": "./dist/vercel/index.js",
+      "types": "./dist/vercel/index.d.ts"
     }
   },
   "scripts": {
@@ -35,7 +39,9 @@
     "test:unit": "bun test tests/unit",
     "test:integration": "bun test tests/integration",
     "test:all": "bun test tests/",
-    "example": "bun run examples/basic.ts"
+    "example": "bun run examples/basic.ts",
+    "smoke": "bun run scripts/smoke-test.ts",
+    "test:pii": "bun run scripts/pii-test.ts"
   },
   "files": [
     "dist",
@@ -47,6 +53,8 @@
     "tracing",
     "openai",
     "anthropic",
+    "gemini",
+    "bedrock",
     "llm"
   ],
   "devDependencies": {
@@ -58,12 +66,21 @@
   },
   "peerDependencies": {
     "@anthropic-ai/sdk": "^0.30.0",
+    "@aws-sdk/client-bedrock-runtime": "^3.0.0",
+    "@google/genai": "^1.0.0",
     "@opentelemetry/api": "^1.0.0",
+    "@vercel/otel": "^1.0.0",
     "ai": "^3.0.0 || ^4.0.0",
     "openai": "^4.0.0"
   },
   "peerDependenciesMeta": {
     "@anthropic-ai/sdk": {
+      "optional": true
+    },
+    "@aws-sdk/client-bedrock-runtime": {
+      "optional": true
+    },
+    "@google/genai": {
       "optional": true
     },
     "ai": {
@@ -73,6 +90,9 @@
       "optional": true
     },
     "@opentelemetry/api": {
+      "optional": true
+    },
+    "@vercel/otel": {
       "optional": true
     }
   },

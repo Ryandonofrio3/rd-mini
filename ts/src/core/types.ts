@@ -9,7 +9,9 @@
 
 export interface RaindropConfig {
   /** Your Raindrop API key */
-  apiKey: string;
+  apiKey?: string;
+  /** @deprecated Use apiKey instead */
+  writeKey?: string;
   /** Base URL for API (default: https://api.raindrop.ai) */
   baseUrl?: string;
   /** Enable debug logging */
@@ -97,7 +99,7 @@ export interface Attachment {
 
 export interface TraceData {
   traceId: string;
-  provider: 'openai' | 'anthropic' | 'ai-sdk' | 'unknown';
+  provider: string;
   model: string;
   input: unknown;
   output?: unknown;
@@ -178,7 +180,7 @@ export type WithTraceId<T> = T & { _traceId: string };
 /**
  * Provider detection result
  */
-export type ProviderType = 'openai' | 'anthropic' | 'ai-sdk' | 'unknown';
+export type ProviderType = 'openai' | 'anthropic' | 'ai-sdk' | 'gemini' | 'bedrock' | 'unknown';
 
 // ============================================
 // Interactions (Server SDK)

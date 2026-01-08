@@ -37,6 +37,8 @@ import { Transport } from './transport.js';
 import { wrapOpenAI } from './wrappers/openai.js';
 import { wrapAnthropic } from './wrappers/anthropic.js';
 import { wrapAISDKModel } from './wrappers/ai-sdk.js';
+import { wrapGemini } from './wrappers/gemini.js';
+import { wrapBedrock } from './wrappers/bedrock.js';
 import { createPiiPlugin } from './plugins/pii.js';
 
 // Global context storage for interaction tracking
@@ -267,7 +269,7 @@ export class Interaction {
 }
 
 export class Raindrop {
-  private config: Required<Omit<RaindropConfig, 'plugins'>>;
+  private config: Required<Omit<RaindropConfig, 'plugins' | 'writeKey'>> & { apiKey: string };
   private plugins: RaindropPlugin[];
   private transport: Transport;
   private currentUserId?: string;
@@ -276,8 +278,14 @@ export class Raindrop {
   private activeInteractions = new Map<string, Interaction>();
 
   constructor(config: RaindropConfig) {
+    // Support both apiKey and writeKey for backwards compatibility
+    const apiKey = config.apiKey || config.writeKey;
+    if (!apiKey) {
+      throw new Error('Raindrop: apiKey (or writeKey) is required');
+    }
+
     this.config = {
-      apiKey: config.apiKey,
+      apiKey,
       baseUrl: config.baseUrl ?? DEFAULT_CONFIG.baseUrl,
       debug: config.debug ?? DEFAULT_CONFIG.debug,
       disabled: config.disabled ?? DEFAULT_CONFIG.disabled,
@@ -457,6 +465,12 @@ export class Raindrop {
           context,
           options
         ) as T;
+
+      case 'gemini':
+        return wrapGemini(client as Parameters<typeof wrapGemini>[0], context) as T;
+
+      case 'bedrock':
+        return wrapBedrock(client as Parameters<typeof wrapBedrock>[0], context) as T;
 
       default:
         if (this.config.debug) {
@@ -1005,6 +1019,30 @@ export class Raindrop {
       const messages = c.messages as Record<string, unknown>;
       if (typeof messages.create === 'function') {
         return 'anthropic';
+      }
+    }
+
+    // Google Gemini: has models.generateContent
+    if (c.models && typeof c.models === 'object') {
+      const models = c.models as Record<string, unknown>;
+      if (typeof models.generateContent === 'function') {
+        return 'gemini';
+      }
+    }
+
+    // AWS Bedrock: has send method and is BedrockRuntimeClient
+    // Check for send method + constructor name pattern
+    if (typeof c.send === 'function') {
+      const constructorName = (client as { constructor?: { name?: string } }).constructor?.name;
+      if (constructorName?.includes('Bedrock')) {
+        return 'bedrock';
+      }
+      // Also check for bedrock-specific config
+      if (c.config && typeof c.config === 'object') {
+        const config = c.config as Record<string, unknown>;
+        if (typeof config.serviceId === 'string' && (config.serviceId as string).toLowerCase().includes('bedrock')) {
+          return 'bedrock';
+        }
       }
     }
 

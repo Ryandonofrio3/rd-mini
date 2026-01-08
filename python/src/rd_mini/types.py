@@ -95,7 +95,7 @@ class FeedbackOptions:
     type: Optional[Literal["thumbs_up", "thumbs_down"]] = None
     score: Optional[float] = None
     comment: Optional[str] = None
-    signal_type: Literal["default", "feedback", "edit", "standard"] = "default"
+    signal_type: Literal["default", "feedback", "edit", "standard"] = "feedback"
     attachment_id: Optional[str] = None
     timestamp: Optional[str] = None
     properties: dict[str, Any] = field(default_factory=dict)

@@ -198,7 +198,7 @@ export function formatFeedback(traceId: string, feedback: FeedbackOptions): Reco
     sentiment: feedback.score !== undefined
       ? (feedback.score >= 0.5 ? 'POSITIVE' : 'NEGATIVE')
       : (feedback.type === 'thumbs_up' ? 'POSITIVE' : 'NEGATIVE'),
-    signal_type: feedback.signalType || 'default',
+    signal_type: feedback.signalType || 'feedback',  // Changed from 'default' to 'feedback'
     timestamp: feedback.timestamp || new Date().toISOString(),
     ...(feedback.attachmentId && { attachment_id: feedback.attachmentId }),
     properties: {

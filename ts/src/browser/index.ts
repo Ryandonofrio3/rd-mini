@@ -71,7 +71,13 @@ export class Raindrop {
   private pendingEvents: Array<{ endpoint: string; data: unknown[] }> = [];
 
   constructor(config: RaindropConfig) {
-    this.apiKey = config.apiKey;
+    // Support both apiKey and writeKey for backwards compatibility
+    const apiKey = config.apiKey || config.writeKey;
+    if (!apiKey) {
+      throw new Error('Raindrop: apiKey (or writeKey) is required');
+    }
+
+    this.apiKey = apiKey;
     this.baseUrl = config.baseUrl ?? DEFAULT_CONFIG.baseUrl;
     this.debug = config.debug ?? DEFAULT_CONFIG.debug;
 

@@ -31,6 +31,8 @@ from rd_mini.types import (
     UserTraits,
 )
 from rd_mini.wrappers.anthropic import wrap_anthropic
+from rd_mini.wrappers.bedrock import wrap_bedrock
+from rd_mini.wrappers.gemini import wrap_gemini
 from rd_mini.wrappers.openai import WrapperContext, wrap_openai
 
 # Context variable for interaction tracking
@@ -219,7 +221,7 @@ class Raindrop:
 
     def __init__(
         self,
-        api_key: str,
+        api_key: str | None = None,
         base_url: str = "https://api.raindrop.ai",
         debug: bool = False,
         disabled: bool = False,
@@ -228,8 +230,15 @@ class Raindrop:
         max_retries: int = 3,
         plugins: list[RaindropPlugin] | None = None,
         redact_pii: bool = False,
+        *,
+        write_key: str | None = None,  # Deprecated alias for api_key
     ):
-        self._api_key = api_key
+        # Support both api_key and write_key for backwards compatibility
+        resolved_key = api_key or write_key
+        if not resolved_key:
+            raise ValueError("Raindrop: api_key (or write_key) is required")
+
+        self._api_key = resolved_key
         self._base_url = base_url
         self._debug = debug
         self._disabled = disabled
@@ -245,7 +254,7 @@ class Raindrop:
             self._plugins.insert(0, create_pii_plugin())
 
         self._transport = Transport(
-            api_key=api_key,
+            api_key=self._api_key,
             base_url=base_url,
             debug=debug,
             disabled=disabled,
@@ -380,8 +389,14 @@ class Raindrop:
         if provider == "anthropic":
             return wrap_anthropic(client, context)  # type: ignore
 
+        if provider == "gemini":
+            return wrap_gemini(client, context)  # type: ignore
+
+        if provider == "bedrock":
+            return wrap_bedrock(client, context)  # type: ignore
+
         if self._debug:
-            print(f"[raindrop] Unknown provider, returning unwrapped")
+            print("[raindrop] Unknown provider, returning unwrapped")
         return client
 
     def identify(self, user_id: str, traits: UserTraits | dict[str, Any] | None = None) -> None:
@@ -421,7 +436,7 @@ class Raindrop:
                 type=options.get("type"),
                 score=options.get("score"),
                 comment=options.get("comment"),
-                signal_type=options.get("signal_type", "default"),
+                signal_type=options.get("signal_type", "feedback"),
                 attachment_id=options.get("attachment_id"),
                 timestamp=options.get("timestamp"),
                 properties=options.get("properties", {}),
@@ -1082,6 +1097,19 @@ class Raindrop:
             return "openai"
         if "anthropic" in module.lower() or client_type == "Anthropic":
             return "anthropic"
+
+        # Google Gemini: has models.generate_content
+        if "google" in module.lower() or client_type == "GoogleGenAI":
+            return "gemini"
+        if hasattr(client, "models") and hasattr(client.models, "generate_content"):
+            return "gemini"
+
+        # AWS Bedrock: has converse method (boto3 bedrock-runtime client)
+        if "botocore" in module.lower() or "boto3" in module.lower():
+            if hasattr(client, "converse"):
+                return "bedrock"
+        if hasattr(client, "converse") and hasattr(client, "converse_stream"):
+            return "bedrock"
 
         # Check for chat.completions (OpenAI-like)
         if hasattr(client, "chat") and hasattr(client.chat, "completions"):
