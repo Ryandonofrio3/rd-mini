@@ -8,11 +8,7 @@ const openai = raindrop.wrap(new OpenAI());
 // That's it. Every call is now traced.
 ```
 
-## Why?
-
-The old way required 30+ lines of OpenTelemetry setup and adding `experimental_telemetry: { isEnabled: true }` to every single AI call. Miss one? No trace.
-
-The new way: wrap your client once, done.
+Wrap your client once, done.
 
 ## Installation
 
@@ -410,65 +406,3 @@ interaction.addAttachments([])// Add attachments
 interaction.setInput(text)    // Set the input
 interaction.finish(options?)  // Finish and send the interaction
 ```
-
----
-
-## Before & After
-
-### Before (Old SDK)
-
-```typescript
-// instrumentation.ts (15+ lines)
-import { registerOTel } from '@vercel/otel';
-import { BatchSpanProcessor } from '@opentelemetry/sdk-trace-base';
-import { OTLPHttpProtoTraceExporter } from '@vercel/otel';
-
-export function register() {
-  registerOTel({
-    serviceName: 'my-app',
-    spanProcessors: [
-      new BatchSpanProcessor(
-        new OTLPHttpProtoTraceExporter({
-          url: 'https://api.raindrop.ai/v1/traces',
-          headers: { Authorization: `Bearer ${process.env.RAINDROP_API_KEY}` },
-        }),
-      ),
-    ],
-  });
-}
-
-// Then at EVERY call site:
-const result = await generateText({
-  model: openai('gpt-4o'),
-  prompt: message,
-  experimental_telemetry: {
-    isEnabled: true,  // Easy to forget!
-    functionId: 'chat',
-    metadata: {
-      ...raindrop.metadata({ userId: 'user_123' }),
-    },
-  },
-});
-```
-
-### After (New SDK)
-
-```typescript
-import { Raindrop } from 'raindrop';
-import OpenAI from 'openai';
-
-const raindrop = new Raindrop({ apiKey: process.env.RAINDROP_API_KEY });
-const openai = raindrop.wrap(new OpenAI());
-
-// Use normally - that's it!
-const result = await openai.chat.completions.create({
-  model: 'gpt-4o',
-  messages: [{ role: 'user', content: message }],
-});
-
-console.log(result._traceId); // Trace ID included automatically
-```
-
----
-
-Built with frustration at OTEL complexity. Made simple.
