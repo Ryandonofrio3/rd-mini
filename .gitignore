@@ -177,3 +177,6 @@ dist
 # Docs (separate Mintlify repo)
 docs/
 .osgrep
+
+# Reference packages
+reference/

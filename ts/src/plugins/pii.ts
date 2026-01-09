@@ -23,6 +23,9 @@ import type {
   InteractionContext,
 } from '../core/types.js';
 
+// Well-known names for name detection
+import wellKnownNames from './well-known-names.json' with { type: 'json' };
+
 // ============================================
 // Types
 // ============================================
@@ -45,9 +48,23 @@ export interface PiiPluginOptions {
   allowList?: string[];
   /** Replacement string (default: <REDACTED>) */
   replacement?: string;
-  /** Whether to redact names using greeting/closing context (default: false) */
+  /** Whether to redact names using greeting/closing context and well-known names (default: false) */
   redactNames?: boolean;
+  /** Use specific tokens like <REDACTED_EMAIL> instead of generic <REDACTED> (default: false) */
+  specificTokens?: boolean;
 }
+
+// Mapping from pattern type to specific replacement token
+const SPECIFIC_REPLACEMENTS: Record<string, string> = {
+  email: '<REDACTED_EMAIL>',
+  phone: '<REDACTED_PHONE>',
+  ssn: '<REDACTED_SSN>',
+  creditCard: '<REDACTED_CREDIT_CARD>',
+  credentials: '<REDACTED_CREDENTIALS>',
+  address: '<REDACTED_ADDRESS>',
+  password: '<REDACTED_SECRET>',
+  name: '<REDACTED_NAME>',
+};
 
 // ============================================
 // Built-in Patterns
@@ -81,25 +98,71 @@ const PATTERNS: Record<PiiPattern, RegExp> = {
 // Greeting patterns for name detection
 const GREETING_PATTERN = /(^|\.\s+)(dear|hi|hello|greetings|hey|hey there)[\s,:-]*/gi;
 
+// Closing patterns for name detection (e.g., "Thanks, John" or "Best regards,\nSarah")
+const CLOSING_PATTERN =
+  /(thx|thanks|thank you|regards|best|[a-z]+ly|[a-z]+ regards|all the best|happy [a-z]+ing|take care|have a [a-z]+ (weekend|night|day))\s*[,.!]*/gi;
+
+// Common words that look like names but aren't (for signature detection)
+const SIGNATURE_EXCLUSIONS = new Set([
+  'thanks',
+  'thank',
+  'best',
+  'regards',
+  'sincerely',
+  'cheers',
+  'hello',
+  'hi',
+  'hey',
+  'dear',
+  'greetings',
+  'respectfully',
+  'cordially',
+  'warmly',
+  'truly',
+  'faithfully',
+  'kindly',
+  'yours',
+]);
+
 // ============================================
 // Redactor Class
 // ============================================
 
 class PiiRedactor {
-  private patterns: RegExp[];
+  private patternMap: Map<PiiPattern, RegExp>;
+  private customPatterns: RegExp[];
   private allowList: Set<string>;
   private replacement: string;
   private redactNames: boolean;
+  private specificTokens: boolean;
+  private wellKnownNamesSet: Set<string>;
+  private wellKnownPattern: RegExp | null;
 
   constructor(options: PiiPluginOptions = {}) {
     const enabledPatterns = options.patterns ?? (Object.keys(PATTERNS) as PiiPattern[]);
-    this.patterns = enabledPatterns.map((p) => PATTERNS[p]);
-    if (options.customPatterns) {
-      this.patterns.push(...options.customPatterns);
-    }
+    this.patternMap = new Map(enabledPatterns.map((p) => [p, PATTERNS[p]]));
+    this.customPatterns = options.customPatterns ?? [];
     this.allowList = new Set(options.allowList ?? []);
     this.replacement = options.replacement ?? '<REDACTED>';
     this.redactNames = options.redactNames ?? false;
+    this.specificTokens = options.specificTokens ?? false;
+
+    // Build well-known names set and pattern
+    this.wellKnownNamesSet = new Set(wellKnownNames.map((n: string) => n.toLowerCase()));
+    if (this.redactNames && this.wellKnownNamesSet.size > 0) {
+      const namesPatternStr =
+        '\\b(' + wellKnownNames.map((n: string) => n.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|') + ')\\b';
+      this.wellKnownPattern = new RegExp(namesPatternStr, 'gi');
+    } else {
+      this.wellKnownPattern = null;
+    }
+  }
+
+  private getReplacement(patternType: string): string {
+    if (this.specificTokens) {
+      return SPECIFIC_REPLACEMENTS[patternType] ?? this.replacement;
+    }
+    return this.replacement;
   }
 
   redact(text: string): string {
@@ -107,9 +170,18 @@ class PiiRedactor {
 
     let result = text;
 
-    // Apply all patterns
-    for (const pattern of this.patterns) {
-      // Reset lastIndex for global patterns
+    // Apply built-in patterns with their specific replacements
+    for (const [patternType, pattern] of this.patternMap) {
+      pattern.lastIndex = 0;
+      const replacement = this.getReplacement(patternType);
+      result = result.replace(pattern, (match) => {
+        if (this.allowList.has(match)) return match;
+        return replacement;
+      });
+    }
+
+    // Apply custom patterns (use generic replacement)
+    for (const pattern of this.customPatterns) {
       pattern.lastIndex = 0;
       result = result.replace(pattern, (match) => {
         if (this.allowList.has(match)) return match;
@@ -117,7 +189,7 @@ class PiiRedactor {
       });
     }
 
-    // Optionally redact names after greetings/before closings
+    // Optionally redact names
     if (this.redactNames) {
       result = this.redactNamesInContext(result);
     }
@@ -127,27 +199,59 @@ class PiiRedactor {
 
   private redactNamesInContext(text: string): string {
     let result = text;
+    const nameReplacement = this.getReplacement('name');
+
+    // First, redact well-known names
+    if (this.wellKnownPattern) {
+      this.wellKnownPattern.lastIndex = 0;
+      result = result.replace(this.wellKnownPattern, nameReplacement);
+    }
 
     // Redact names after greetings (e.g., "Hello John" -> "Hello <REDACTED>")
-    result = result.replace(GREETING_PATTERN, (match) => {
-      const afterMatch = result.slice(result.indexOf(match) + match.length);
-      const nameMatch = afterMatch.match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/);
+    GREETING_PATTERN.lastIndex = 0;
+    const greetingMatches = [...result.matchAll(new RegExp(GREETING_PATTERN.source, 'gi'))];
+    for (const match of greetingMatches.reverse()) {
+      const startPos = (match.index ?? 0) + match[0].length;
+      const nameMatch = result.slice(startPos).match(/^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)/);
       if (nameMatch) {
-        return match + this.replacement;
+        const nameStart = startPos;
+        const nameEnd = startPos + nameMatch[1].length;
+        result = result.slice(0, nameStart) + nameReplacement + result.slice(nameEnd);
       }
-      return match;
-    });
+    }
+
+    // Redact names before closings (e.g., "Thanks, John" or "Best regards,\nSarah")
+    let lines = result.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      CLOSING_PATTERN.lastIndex = 0;
+      const closingMatch = CLOSING_PATTERN.exec(lines[i]);
+      if (closingMatch) {
+        const beforeClosing = lines[i].slice(0, closingMatch.index);
+        const nameBefore = beforeClosing.match(/([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\s*$/);
+        if (nameBefore) {
+          lines[i] =
+            beforeClosing.slice(0, nameBefore.index) +
+            nameReplacement +
+            beforeClosing.slice((nameBefore.index ?? 0) + nameBefore[1].length) +
+            lines[i].slice(closingMatch.index);
+        }
+      }
+    }
+    result = lines.join('\n');
 
     // Redact standalone signature-like lines (short lines with just capitalized words)
-    const lines = result.split('\n');
+    lines = result.split('\n');
     for (let i = 0; i < lines.length; i++) {
       const stripped = lines[i].trim();
+      const strippedLower = stripped.toLowerCase().replace(/[,.]$/, '');
       if (
         stripped.length < 50 &&
         stripped.length > 0 &&
-        /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*[,.]?$/.test(stripped)
+        /^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*[,.]?$/.test(stripped) &&
+        !lines[i].includes(nameReplacement) &&
+        !SIGNATURE_EXCLUSIONS.has(strippedLower)
       ) {
-        lines[i] = lines[i].replace(stripped, this.replacement);
+        lines[i] = lines[i].replace(stripped, nameReplacement);
       }
     }
 
@@ -224,6 +328,14 @@ export function createPiiPlugin(options: PiiPluginOptions = {}): RaindropPlugin 
           }
         }
       }
+      // Redact error messages (may contain sensitive data)
+      if (trace.error) {
+        trace.error = redactor.redact(trace.error);
+      }
+      // Redact custom properties
+      if (trace.properties) {
+        trace.properties = redactor.redactObject(trace.properties) as Record<string, unknown>;
+      }
     },
 
     onSpan(span: SpanData): void {
@@ -232,6 +344,12 @@ export function createPiiPlugin(options: PiiPluginOptions = {}): RaindropPlugin 
       }
       if (span.output) {
         span.output = redactor.redactObject(span.output);
+      }
+      if (span.error) {
+        span.error = redactor.redact(span.error);
+      }
+      if (span.properties) {
+        span.properties = redactor.redactObject(span.properties) as Record<string, unknown>;
       }
     },
 
@@ -242,6 +360,19 @@ export function createPiiPlugin(options: PiiPluginOptions = {}): RaindropPlugin 
       if (ctx.output) {
         ctx.output = redactor.redact(ctx.output);
       }
+      // Redact interaction properties
+      if (ctx.properties) {
+        ctx.properties = redactor.redactObject(ctx.properties) as Record<string, unknown>;
+      }
+      // Redact attachments
+      if (ctx.attachments) {
+        for (const attachment of ctx.attachments) {
+          attachment.value = redactor.redact(attachment.value);
+          if (attachment.name) {
+            attachment.name = redactor.redact(attachment.name);
+          }
+        }
+      }
       // Redact spans within interaction
       for (const span of ctx.spans) {
         if (span.input) {
@@ -249,6 +380,12 @@ export function createPiiPlugin(options: PiiPluginOptions = {}): RaindropPlugin 
         }
         if (span.output) {
           span.output = redactor.redactObject(span.output);
+        }
+        if (span.error) {
+          span.error = redactor.redact(span.error);
+        }
+        if (span.properties) {
+          span.properties = redactor.redactObject(span.properties) as Record<string, unknown>;
         }
       }
     },

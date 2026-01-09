@@ -61,6 +61,7 @@ export interface AnthropicWrapperContext {
   sendTrace: (trace: TraceData) => void;
   getUserId: () => string | undefined;
   getInteractionContext: () => InteractionContext | undefined;
+  notifySpan: (span: SpanData) => void;
   debug: boolean;
 }
 
@@ -139,7 +140,8 @@ export function wrapAnthropic<T extends AnthropicClient>(
             tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
           },
         };
-        interaction.spans.push(span);
+        context.notifySpan(span);
+          interaction.spans.push(span);
       } else {
         // Send trace
         context.sendTrace({
@@ -180,7 +182,8 @@ export function wrapAnthropic<T extends AnthropicClient>(
           input: params.messages,
           error: error instanceof Error ? error.message : String(error),
         };
-        interaction.spans.push(span);
+        context.notifySpan(span);
+          interaction.spans.push(span);
       } else {
         context.sendTrace({
           traceId,
@@ -284,6 +287,7 @@ function wrapStream(
               tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
             },
           };
+          options.context.notifySpan(span);
           interaction.spans.push(span);
         } else {
           options.context.sendTrace({
@@ -321,6 +325,7 @@ function wrapStream(
             input: options.input,
             error: error instanceof Error ? error.message : String(error),
           };
+          options.context.notifySpan(span);
           interaction.spans.push(span);
         } else {
           options.context.sendTrace({

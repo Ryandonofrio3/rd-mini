@@ -106,6 +106,7 @@ export interface OpenAIWrapperContext {
   sendTrace: (trace: TraceData) => void;
   getUserId: () => string | undefined;
   getInteractionContext: () => InteractionContext | undefined;
+  notifySpan: (span: SpanData) => void;
   debug: boolean;
 }
 
@@ -207,6 +208,7 @@ function wrapChatCompletions(
             tool_calls: toolCalls,
           },
         };
+        context.notifySpan(span);
         interaction.spans.push(span);
       } else {
         // Standalone - send as trace
@@ -248,6 +250,7 @@ function wrapChatCompletions(
           input: params.messages,
           error: error instanceof Error ? error.message : String(error),
         };
+        context.notifySpan(span);
         interaction.spans.push(span);
       } else {
         context.sendTrace({
@@ -424,6 +427,7 @@ function wrapChatStream(
               tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
             },
           };
+          options.context.notifySpan(span);
           interaction.spans.push(span);
         } else {
           options.context.sendTrace({
@@ -456,6 +460,7 @@ function wrapChatStream(
             input: options.input,
             error: error instanceof Error ? error.message : String(error),
           };
+          options.context.notifySpan(span);
           interaction.spans.push(span);
         } else {
           options.context.sendTrace({

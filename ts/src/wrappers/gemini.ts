@@ -77,6 +77,7 @@ export interface GeminiWrapperContext {
   sendTrace: (trace: TraceData) => void;
   getUserId: () => string | undefined;
   getInteractionContext: () => InteractionContext | undefined;
+  notifySpan: (span: SpanData) => void;
   debug: boolean;
 }
 
@@ -159,6 +160,7 @@ function wrapGenerateContent(
             thinking_level: params.config?.thinkingConfig?.thinkingLevel,
           },
         };
+        context.notifySpan(span);
         interaction.spans.push(span);
       } else {
         // Standalone - send as trace
@@ -204,6 +206,7 @@ function wrapGenerateContent(
           input: params.contents,
           error: error instanceof Error ? error.message : String(error),
         };
+        context.notifySpan(span);
         interaction.spans.push(span);
       } else {
         context.sendTrace({
@@ -329,6 +332,7 @@ function wrapStream(
               thinking_level: options.thinkingLevel,
             },
           };
+          options.context.notifySpan(span);
           interaction.spans.push(span);
         } else {
           options.context.sendTrace({
@@ -369,6 +373,7 @@ function wrapStream(
             input: options.input,
             error: error instanceof Error ? error.message : String(error),
           };
+          options.context.notifySpan(span);
           interaction.spans.push(span);
         } else {
           options.context.sendTrace({

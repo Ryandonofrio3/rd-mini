@@ -449,6 +449,7 @@ export class Raindrop {
       sendTrace: (trace: TraceData) => this.sendTrace(trace),
       getUserId: () => this.currentUserId,
       getInteractionContext: () => this.getInteractionContext(),
+      notifySpan: (span: SpanData) => this._notifySpan(span),
       debug: this.config.debug,
     };
 

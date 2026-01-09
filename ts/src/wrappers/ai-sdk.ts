@@ -19,6 +19,7 @@ export interface AISDKWrapperContext {
   sendTrace: (trace: TraceData) => void;
   getUserId: () => string | undefined;
   getInteractionContext: () => InteractionContext | undefined;
+  notifySpan: (span: SpanData) => void;
   debug: boolean;
 }
 
@@ -81,6 +82,7 @@ export function wrapAISDKModel<T extends LanguageModel>(
                   tool_calls: toolCalls?.map(tc => ({ name: tc.toolName, arguments: tc.args })),
                 },
               };
+              context.notifySpan(span);
               interaction.spans.push(span);
             } else {
               context.sendTrace({
@@ -126,6 +128,7 @@ export function wrapAISDKModel<T extends LanguageModel>(
                 input: options.prompt || options.messages,
                 error: error instanceof Error ? error.message : String(error),
               };
+              context.notifySpan(span);
               interaction.spans.push(span);
             } else {
               context.sendTrace({
@@ -227,7 +230,8 @@ export function wrapAISDKModel<T extends LanguageModel>(
                         tool_calls: collectedToolCalls.length > 0 ? collectedToolCalls : undefined,
                       },
                     };
-                    interaction.spans.push(span);
+                    context.notifySpan(span);
+              interaction.spans.push(span);
                   } else {
                     context.sendTrace({
                       traceId,
@@ -264,7 +268,8 @@ export function wrapAISDKModel<T extends LanguageModel>(
                       input: options.prompt || options.messages,
                       error: error instanceof Error ? error.message : String(error),
                     };
-                    interaction.spans.push(span);
+                    context.notifySpan(span);
+              interaction.spans.push(span);
                   } else {
                     context.sendTrace({
                       traceId,
@@ -305,6 +310,7 @@ export function wrapAISDKModel<T extends LanguageModel>(
                 input: options.prompt || options.messages,
                 error: error instanceof Error ? error.message : String(error),
               };
+              context.notifySpan(span);
               interaction.spans.push(span);
             } else {
               context.sendTrace({

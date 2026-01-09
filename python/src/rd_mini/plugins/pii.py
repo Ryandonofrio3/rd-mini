@@ -62,7 +62,7 @@ class PiiPluginOptions:
     replacement: str = "<REDACTED>"
     """Replacement string (used when specific_tokens=False)"""
 
-    redact_names: bool = True
+    redact_names: bool = False
     """Whether to redact names using greeting/closing context and well-known names"""
 
     specific_tokens: bool = False
@@ -134,6 +134,28 @@ CLOSING_PATTERN = re.compile(
     r"(thx|thanks|thank you|regards|best|[a-z]+ly|[a-z]+ regards|all the best|happy [a-z]+ing|take care|have a [a-z]+ (weekend|night|day))\s*[,.!]*",
     re.IGNORECASE,
 )
+
+# Common words that look like names but aren't (for signature detection)
+SIGNATURE_EXCLUSIONS: set[str] = {
+    "thanks",
+    "thank",
+    "best",
+    "regards",
+    "sincerely",
+    "cheers",
+    "hello",
+    "hi",
+    "hey",
+    "dear",
+    "greetings",
+    "respectfully",
+    "cordially",
+    "warmly",
+    "truly",
+    "faithfully",
+    "kindly",
+    "yours",
+}
 
 
 # ============================================
@@ -253,10 +275,12 @@ class PiiRedactor:
         lines = result.split("\n")
         for i, line in enumerate(lines):
             stripped = line.strip()
+            stripped_lower = stripped.lower().rstrip(",.")
             if (
                 0 < len(stripped) < 50
                 and re.match(r"^[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*[,.]?$", stripped)
                 and name_replacement not in line
+                and stripped_lower not in SIGNATURE_EXCLUSIONS
             ):
                 lines[i] = line.replace(stripped, name_replacement)
 
@@ -307,12 +331,25 @@ class PiiPlugin:
             ctx.input = self.redactor.redact(ctx.input)
         if ctx.output:
             ctx.output = self.redactor.redact(ctx.output)
+        # Redact interaction properties
+        if ctx.properties:
+            ctx.properties = self.redactor.redact_object(ctx.properties)
+        # Redact attachments
+        if ctx.attachments:
+            for attachment in ctx.attachments:
+                attachment.value = self.redactor.redact(attachment.value)
+                if attachment.name:
+                    attachment.name = self.redactor.redact(attachment.name)
         # Redact spans within interaction
         for span in ctx.spans:
             if span.input:
                 span.input = self.redactor.redact_object(span.input)
             if span.output:
                 span.output = self.redactor.redact_object(span.output)
+            if span.error:
+                span.error = self.redactor.redact(span.error)
+            if span.properties:
+                span.properties = self.redactor.redact_object(span.properties)
 
     def on_span(self, span: "SpanData") -> None:
         """Called when a span completes - redact input/output."""
@@ -320,6 +357,10 @@ class PiiPlugin:
             span.input = self.redactor.redact_object(span.input)
         if span.output:
             span.output = self.redactor.redact_object(span.output)
+        if span.error:
+            span.error = self.redactor.redact(span.error)
+        if span.properties:
+            span.properties = self.redactor.redact_object(span.properties)
 
     def on_trace(self, trace: "TraceData") -> None:
         """Called when a trace is created - redact input/output."""
@@ -334,6 +375,12 @@ class PiiPlugin:
                     call["arguments"] = self.redactor.redact_object(call["arguments"])
                 if call.get("result"):
                     call["result"] = self.redactor.redact_object(call["result"])
+        # Redact error messages (may contain sensitive data)
+        if trace.error:
+            trace.error = self.redactor.redact(trace.error)
+        # Redact custom properties
+        if trace.properties:
+            trace.properties = self.redactor.redact_object(trace.properties)
 
     async def flush(self) -> None:
         """Called during flush."""
@@ -354,7 +401,7 @@ def create_pii_plugin(
     custom_patterns: list[Pattern[str]] | None = None,
     allow_list: list[str] | None = None,
     replacement: str = "<REDACTED>",
-    redact_names: bool = True,
+    redact_names: bool = False,
     specific_tokens: bool = False,
 ) -> PiiPlugin:
     """
@@ -366,7 +413,7 @@ def create_pii_plugin(
         allow_list: Strings to never redact
         replacement: Replacement string (default: <REDACTED>)
         redact_names: Whether to redact names using well-known names list and
-                      greeting/closing context (default: True)
+                      greeting/closing context (default: False)
         specific_tokens: Use specific tokens like <REDACTED_EMAIL>, <REDACTED_PHONE>,
                         <REDACTED_NAME> instead of generic <REDACTED> (default: False)
 

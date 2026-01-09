@@ -9,6 +9,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from contextlib import contextmanager
@@ -739,8 +740,7 @@ class Raindrop:
         def decorator(fn: F) -> F:
             task_name = name or fn.__name__
 
-            @wraps(fn)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
+            def _create_span() -> tuple[SpanData, float, InteractionContext | None]:
                 context = _interaction_context.get()
                 span_id = self._generate_trace_id()
                 start_time = time.time()
@@ -754,45 +754,68 @@ class Raindrop:
                     name=task_name,
                     type="tool",  # Tasks are stored as tool type with task prefix
                     start_time=start_time,
-                    input=args[0] if len(args) == 1 else args if args else kwargs,
+                    input=None,  # Set by caller
                     properties={"is_task": True, **task_options.get("properties", {})},
                 )
+                return span, start_time, context
 
-                try:
-                    result = fn(*args, **kwargs)
-                    end_time = time.time()
+            def _finish_span(
+                span: SpanData,
+                start_time: float,
+                context: InteractionContext | None,
+                result: Any = None,
+                error: Exception | None = None,
+            ) -> None:
+                end_time = time.time()
+                span.end_time = end_time
+                span.latency_ms = int((end_time - start_time) * 1000)
 
-                    span.end_time = end_time
-                    span.latency_ms = int((end_time - start_time) * 1000)
+                if error:
+                    span.error = str(error)
+                else:
                     span.output = result
 
-                    # Notify plugins
-                    self._notify_span(span)
+                # Notify plugins
+                self._notify_span(span)
 
-                    if context:
-                        context.spans.append(span)
-                    else:
-                        self._send_tool_trace(span)
+                if context:
+                    context.spans.append(span)
+                else:
+                    self._send_tool_trace(span)
 
-                    return result
+            if asyncio.iscoroutinefunction(fn):
 
-                except Exception as e:
-                    end_time = time.time()
-                    span.end_time = end_time
-                    span.latency_ms = int((end_time - start_time) * 1000)
-                    span.error = str(e)
+                @wraps(fn)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    span, start_time, context = _create_span()
+                    span.input = args[0] if len(args) == 1 else args if args else kwargs
 
-                    # Notify plugins
-                    self._notify_span(span)
+                    try:
+                        result = await fn(*args, **kwargs)
+                        _finish_span(span, start_time, context, result=result)
+                        return result
+                    except Exception as e:
+                        _finish_span(span, start_time, context, error=e)
+                        raise
 
-                    if context:
-                        context.spans.append(span)
-                    else:
-                        self._send_tool_trace(span)
+                return async_wrapper  # type: ignore
 
-                    raise
+            else:
 
-            return wrapper  # type: ignore
+                @wraps(fn)
+                def wrapper(*args: Any, **kwargs: Any) -> Any:
+                    span, start_time, context = _create_span()
+                    span.input = args[0] if len(args) == 1 else args if args else kwargs
+
+                    try:
+                        result = fn(*args, **kwargs)
+                        _finish_span(span, start_time, context, result=result)
+                        return result
+                    except Exception as e:
+                        _finish_span(span, start_time, context, error=e)
+                        raise
+
+                return wrapper  # type: ignore
 
         return decorator
 
@@ -823,8 +846,7 @@ class Raindrop:
             workflow_name = name or fn.__name__
             workflow_event = event or workflow_name
 
-            @wraps(fn)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
+            def _create_context(args: tuple[Any, ...]) -> InteractionContext:
                 interaction_id = self._generate_trace_id()
                 start_time = time.time()
                 user_id = workflow_options.get("user_id") or self._current_user_id
@@ -842,62 +864,102 @@ class Raindrop:
                 )
 
                 if self._debug:
-                    print(f"[raindrop] Workflow started: {workflow_name} {interaction_id}")
+                    print(f"[raindrop] Workflow started: {workflow_name} {context.interaction_id}")
 
-                token = _interaction_context.set(context)
-                error: str | None = None
+                return context
 
-                try:
-                    result = fn(*args, **kwargs)
+            def _finish_workflow(
+                context: InteractionContext,
+                token: Any,
+                error: str | None = None,
+            ) -> None:
+                _interaction_context.reset(token)
+                end_time = time.time()
 
-                    # If result is a string, use it as output
-                    if isinstance(result, str):
-                        context.output = result
+                # Convert attachments to dict format
+                attachments = [
+                    {
+                        "type": att.type,
+                        "name": att.name,
+                        "value": att.value,
+                        "role": att.role,
+                        "language": att.language,
+                    }
+                    for att in context.attachments
+                ]
 
-                    return result
+                self._transport.send_interaction(
+                    interaction_id=context.interaction_id,
+                    user_id=context.user_id,
+                    event=context.event or "interaction",
+                    input_text=context.input,
+                    output=context.output,
+                    start_time=context.start_time,
+                    end_time=end_time,
+                    latency_ms=int((end_time - context.start_time) * 1000),
+                    conversation_id=context.conversation_id,
+                    properties=context.properties,
+                    error=error,
+                    spans=context.spans,
+                    attachments=attachments,
+                )
 
-                except Exception as e:
-                    error = str(e)
-                    raise
+                self._last_trace_id = context.interaction_id
 
-                finally:
-                    _interaction_context.reset(token)
-                    end_time = time.time()
+                if self._debug:
+                    print(f"[raindrop] Workflow finished: {workflow_name} {context.interaction_id}")
 
-                    # Convert attachments to dict format
-                    attachments = [
-                        {
-                            "type": att.type,
-                            "name": att.name,
-                            "value": att.value,
-                            "role": att.role,
-                            "language": att.language,
-                        }
-                        for att in context.attachments
-                    ]
+            if asyncio.iscoroutinefunction(fn):
 
-                    self._transport.send_interaction(
-                        interaction_id=context.interaction_id,
-                        user_id=context.user_id,
-                        event=context.event or "interaction",
-                        input_text=context.input,
-                        output=context.output,
-                        start_time=context.start_time,
-                        end_time=end_time,
-                        latency_ms=int((end_time - context.start_time) * 1000),
-                        conversation_id=context.conversation_id,
-                        properties=context.properties,
-                        error=error,
-                        spans=context.spans,
-                        attachments=attachments,
-                    )
+                @wraps(fn)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    context = _create_context(args)
+                    token = _interaction_context.set(context)
+                    error: str | None = None
 
-                    self._last_trace_id = interaction_id
+                    try:
+                        result = await fn(*args, **kwargs)
 
-                    if self._debug:
-                        print(f"[raindrop] Workflow finished: {workflow_name} {interaction_id}")
+                        # If result is a string, use it as output
+                        if isinstance(result, str):
+                            context.output = result
 
-            return wrapper  # type: ignore
+                        return result
+
+                    except Exception as e:
+                        error = str(e)
+                        raise
+
+                    finally:
+                        _finish_workflow(context, token, error)
+
+                return async_wrapper  # type: ignore
+
+            else:
+
+                @wraps(fn)
+                def wrapper(*args: Any, **kwargs: Any) -> Any:
+                    context = _create_context(args)
+                    token = _interaction_context.set(context)
+                    error: str | None = None
+
+                    try:
+                        result = fn(*args, **kwargs)
+
+                        # If result is a string, use it as output
+                        if isinstance(result, str):
+                            context.output = result
+
+                        return result
+
+                    except Exception as e:
+                        error = str(e)
+                        raise
+
+                    finally:
+                        _finish_workflow(context, token, error)
+
+                return wrapper  # type: ignore
 
         return decorator
 
@@ -915,8 +977,7 @@ class Raindrop:
         """
 
         def decorator(fn: F) -> F:
-            @wraps(fn)
-            def wrapper(*args: Any, **kwargs: Any) -> Any:
+            def _create_span() -> tuple[SpanData, float, InteractionContext | None]:
                 context = _interaction_context.get()
                 span_id = self._generate_trace_id()
                 start_time = time.time()
@@ -930,46 +991,68 @@ class Raindrop:
                     name=name,
                     type="tool",
                     start_time=start_time,
-                    input=args[0] if len(args) == 1 else args if args else kwargs,
+                    input=None,  # Set by caller
                     properties=tool_options.get("properties", {}),
                 )
+                return span, start_time, context
 
-                try:
-                    result = fn(*args, **kwargs)
-                    end_time = time.time()
+            def _finish_span(
+                span: SpanData,
+                start_time: float,
+                context: InteractionContext | None,
+                result: Any = None,
+                error: Exception | None = None,
+            ) -> None:
+                end_time = time.time()
+                span.end_time = end_time
+                span.latency_ms = int((end_time - start_time) * 1000)
 
-                    span.end_time = end_time
-                    span.latency_ms = int((end_time - start_time) * 1000)
+                if error:
+                    span.error = str(error)
+                else:
                     span.output = result
 
-                    # Notify plugins
-                    self._notify_span(span)
+                # Notify plugins
+                self._notify_span(span)
 
-                    if context:
-                        context.spans.append(span)
-                    else:
-                        # Standalone tool call
-                        self._send_tool_trace(span)
+                if context:
+                    context.spans.append(span)
+                else:
+                    self._send_tool_trace(span)
 
-                    return result
+            if asyncio.iscoroutinefunction(fn):
 
-                except Exception as e:
-                    end_time = time.time()
-                    span.end_time = end_time
-                    span.latency_ms = int((end_time - start_time) * 1000)
-                    span.error = str(e)
+                @wraps(fn)
+                async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+                    span, start_time, context = _create_span()
+                    span.input = args[0] if len(args) == 1 else args if args else kwargs
 
-                    # Notify plugins
-                    self._notify_span(span)
+                    try:
+                        result = await fn(*args, **kwargs)
+                        _finish_span(span, start_time, context, result=result)
+                        return result
+                    except Exception as e:
+                        _finish_span(span, start_time, context, error=e)
+                        raise
 
-                    if context:
-                        context.spans.append(span)
-                    else:
-                        self._send_tool_trace(span)
+                return async_wrapper  # type: ignore
 
-                    raise
+            else:
 
-            return wrapper  # type: ignore
+                @wraps(fn)
+                def wrapper(*args: Any, **kwargs: Any) -> Any:
+                    span, start_time, context = _create_span()
+                    span.input = args[0] if len(args) == 1 else args if args else kwargs
+
+                    try:
+                        result = fn(*args, **kwargs)
+                        _finish_span(span, start_time, context, result=result)
+                        return result
+                    except Exception as e:
+                        _finish_span(span, start_time, context, error=e)
+                        raise
+
+                return wrapper  # type: ignore
 
         return decorator
 

@@ -104,6 +104,7 @@ export interface BedrockWrapperContext {
   sendTrace: (trace: TraceData) => void;
   getUserId: () => string | undefined;
   getInteractionContext: () => InteractionContext | undefined;
+  notifySpan: (span: SpanData) => void;
   debug: boolean;
 }
 
@@ -206,6 +207,7 @@ async function handleConverse(
           tool_calls: toolCalls.length > 0 ? toolCalls : undefined,
         },
       };
+      context.notifySpan(span);
       interaction.spans.push(span);
     } else {
       context.sendTrace({
@@ -250,6 +252,7 @@ async function handleConverse(
         input: input.messages,
         error: error instanceof Error ? error.message : String(error),
       };
+      context.notifySpan(span);
       interaction.spans.push(span);
     } else {
       context.sendTrace({
@@ -403,6 +406,7 @@ function wrapStream(
               tool_calls: parsedToolCalls.length > 0 ? parsedToolCalls : undefined,
             },
           };
+          options.context.notifySpan(span);
           interaction.spans.push(span);
         } else {
           options.context.sendTrace({
@@ -444,6 +448,7 @@ function wrapStream(
             input: options.input,
             error: error instanceof Error ? error.message : String(error),
           };
+          options.context.notifySpan(span);
           interaction.spans.push(span);
         } else {
           options.context.sendTrace({
